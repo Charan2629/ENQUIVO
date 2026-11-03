@@ -1,0 +1,182 @@
+---
+trigger: always_on
+description: "Engineering rules, architecture, milestone workflow and interview coaching protocol for ENQUIVO."
+---
+
+# ENQUIVO — AI Lead-Response & Site-Visit Assistant
+
+## 1. Role & "Build + Teach" Milestone Protocol (STRICT)
+You are my Principal Engineering Mentor and Implementation Partner. We are building this take-home assessment in 8 strict, sequential milestones. For EVERY milestone, you MUST follow this exact sequence:
+
+1. **Scope Lock:** Implement ONLY the current milestone. Never jump ahead.
+2. **Execute & Verify:** Run all configured and applicable checks before finishing:
+   - `npx tsc --noEmit`
+   - `npm run lint`
+   - `npm run build`
+   - `npm test`
+   - **Verification Rules:** Never fabricate test results. If a command is not configured yet, report `NOT CONFIGURED`. If a test is not applicable yet, report `NOT APPLICABLE`. If any check fails, fix it before requesting a commit. Report actual test counts and failures.
+3. **Update Live Docs (No Duplicate Appending):** Update the relevant sections of `docs/TDD_DRAFT.md` (maintaining a clean Decision Log and explicit `[ASSUMPTION]` tags) and `deployment.md`.
+4. **Interview Defense & Learning Block (MANDATORY):** Before asking me to commit, output a section titled `### 🎓 Interview Defense & Deep-Dive` explaining:
+   - **Code Walkthrough:** Exact file-by-file breakdown of what was written and how data flows.
+   - **Trade-off Defense:** Why we chose this pattern over simpler alternatives.
+   - **Failure Mode:** What would break in production if we removed our guardrails/locks.
+   - **2 Likely Interview Questions & Answers:** Two likely interview questions based on the implementation, with technically accurate example answers (framed as preparation questions, not claims about the actual panel).
+5. **Verification & Commit Checkpoint:** Output the exact verification summary and `git add` / `git commit` commands, then pause and wait for me to ask questions or reply `"Next"`.
+
+---
+
+## 2. Strictly Enforced Domain & Technical Specifications
+
+### A. Complete 13-Model Database Schema & Timezone Standard
+All timestamps must be stored consistently in **UTC** in PostgreSQL and formatted/displayed in **`Asia/Kolkata` (IST, UTC+5:30)** in the UI and reminder payloads.
+Include all 13 models in `prisma/schema.prisma`:
+1. `User` (Roles: `BUYER`, `SALES_EXEC`, `SALES_HEAD` — document in TDD that `SALES_HEAD` is introduced to govern the Fact Sheet editor and daily flagged-chat review).
+2. `Project`
+3. `FactSheet` (Includes `scope`: `PORTFOLIO` | `PROJECT_1` | `PROJECT_2` and `status`: `VERIFIED` | `DRAFT` | `UNVERIFIED`).
+4. `Lead`
+5. `LeadSourceEvent` (Preserves original source history when duplicate phone numbers merge; enforces first-touch attribution).
+6. `ConsentRecord` (Tracks DPDP Act 2023 explicit consent timestamp and opt-out state).
+7. `Conversation`
+8. `ChatMessage` (Persists complete buyer and AI conversation logs with grounding metadata).
+9. `Handoff` (Stores AI conversation summary, escalation reason, handoff status, and assigned named salesperson).
+10. `VisitSlot`
+11. `SiteVisit`
+12. `ReminderJob`
+13. `SourceSpend`
+
+### B. Historical Sample Data vs. Future Bookings
+- Preserve the 3 exact sample leads in `prisma/seed.ts`:
+  - `LD-58210` | Hardik Patel | Property portal | Project 1 | 3 BHK | Booked `2026-11-01 11:00`
+  - `LD-58211` | Nidhi Shah | Social media ad | Project 2 | 2 BHK | Not booked
+  - `LD-58224` | Kavita Joshi | Hoarding call | Project 2 | 2 BHK | Visited
+- **Date Logic:** Today is November 3, 2026. Hardik Patel's `2026-11-01 11:00` appointment is in the past—treat it as a historical booking (do NOT queue future reminders or count it as an upcoming appointment). Seed additional `AVAILABLE` slots starting from November 4, 2026 onward for live booking tests.
+
+### C. Fact Sheet Approval Policy & RERA Compliance
+- **RERA Placeholders:** Never invent realistic-looking RERA numbers. Use `RERA Reg: DEMO-ONLY-NOT-VERIFIED`, label as `[ASSUMPTION]` in the TDD, and display the compliance disclaimer in the UI.
+- **Fact Sheet Scope & Status Rules:**
+  - Seed only facts explicitly stated in the client brief (2 live projects in Ahmedabad, 420 apartments total, 2 & 3 BHK configurations, ₹65 lakh to ₹1.2 crore range) as `ACTIVE` + `VERIFIED` with `PORTFOLIO` scope.
+  - Portfolio-level facts must never be misrepresented as individually verified Project 1 or Project 2 facts.
+  - Any additional seeded or Sales Head entries must initially have status `DRAFT` or `UNVERIFIED` unless explicitly approved.
+  - **AI Retrieval Rule:** Only `ACTIVE` + `VERIFIED` facts may be retrieved by the AI. The AI must never use `DRAFT`, `UNVERIFIED`, or rejected facts. Missing project-specific details, unlisted amenities, or price negotiation requests must immediately trigger `handoffToExecutive()`.
+
+### D. Booking Lifecycle & Concurrency Control
+- **Booking Lifecycle:**
+  - `CONFIRMED` bookings reserve the slot (`VisitSlot.status = 'BOOKED'`).
+  - `CANCELLED` bookings release the slot back to `AVAILABLE` while keeping the historical `CANCELLED` `SiteVisit` record in the database.
+  - At most one active (`CONFIRMED`) booking may exist for a slot at any time (use a PostgreSQL partial unique index via Prisma `partialIndexes` or migration SQL: `CREATE UNIQUE INDEX one_active_booking_per_slot ON "SiteVisit"("slotId") WHERE status = 'CONFIRMED'`).
+- **Transactional Execution:**
+  - Inside `prisma.$transaction`, execute an atomic conditional update: update `VisitSlot` to `BOOKED` only `WHERE id = $1 AND status = 'AVAILABLE'`. Verify `count === 1` before inserting the `CONFIRMED` `SiteVisit`.
+  - Support and test both: (1) Simultaneous booking requests via `Promise.all` (1 succeeds, others get `409 Conflict`), and (2) Rebooking a slot after a previous booking is `CANCELLED`.
+
+### E. Scheduled Reminder Processing
+- Create `ReminderJob` records for **24-hour** and **2-hour** pre-visit reminders upon booking confirmation.
+- Implement a scheduled job processor service with a mock messaging provider.
+- Track states: `PENDING`, `PROCESSING`, `SENT`, and `FAILED`.
+- Enforce an `idempotencyKey` (`visitId + reminderType`) to prevent duplicate delivery.
+- Implement a bounded retry policy (`maxAttempts = 3`) for transient failures.
+- Automatically cancel `PENDING` reminders when a booking is `CANCELLED`. Never send real external WhatsApp/SMS messages.
+
+### F. Precise Analytics & Metric Definitions
+- **First-Touch Attribution:** Retain the original acquisition source on `Lead` when duplicates merge, while recording subsequent touches in `LeadSourceEvent`.
+- **Illustrative Source Spend:** Seed `SourceSpend` totaling ₹30 lakh/month across Property Portal, Social Media Ad, Website, and Hoarding Call. Label clearly as `[ASSUMPTION — Illustrative Demo Allocation]` in UI and TDD.
+- **Exact Formulas:**
+  - `firstResponseTime = firstResponseAt - leadCreatedAt` (Display median in minutes vs 14h baseline).
+  - `visitConversionRate = (attendedVisits / totalLeads) * 100`
+  - `showUpRate = (attendedPastVisits / (attendedPastVisits + noShowPastVisits)) * 100` (Strictly exclude future upcoming bookings and cancelled bookings).
+  - `costPerVisit = sourceSpend / attendedVisits`
+
+### G. Authorization, AI Security, & DPDP Compliance
+- Hash user passwords securely (e.g., `bcryptjs` or `argon2`) and use secure, HTTP-only session cookies.
+- Enforce server-side Role-Based Access Control (RBAC) to prevent IDOR:
+  - `BUYER`: Access only their own lead profile, conversations, and site visits.
+  - `SALES_EXEC`: Access assigned leads, handoffs, and conversations.
+  - `SALES_HEAD`: Access all leads, flagged chats, Fact Sheet editor, Slot manager, and analytics.
+- AI API keys stay strictly server-side. Validate every API payload and AI tool argument using **Zod**.
+- Never commit `.env` files or secrets; maintain `.env.example` with variable names and placeholder values only.
+
+---
+
+## 3. Locked Technology Stack (STRICT)
+
+Do not randomly change, replace or introduce alternative technologies without discussing the reason with me first.
+
+### Frontend
+- Next.js App Router
+- React
+- TypeScript
+- Tailwind CSS
+- shadcn/ui
+- Lucide React
+- Recharts
+- React Hook Form
+- Zod
+
+### Backend
+- Next.js Route Handlers (REST APIs)
+- TypeScript service-based architecture
+- Prisma ORM
+- Zod request validation
+
+### Database
+- PostgreSQL
+- Neon PostgreSQL for hosted database
+- Prisma migrations and seed scripts
+
+### Authentication & Security
+- Auth.js with Prisma integration
+- Argon2id password hashing
+- Role-Based Access Control (RBAC)
+- Secure HTTP-only session cookies
+
+### AI
+- Google Gemini API
+- `@google/genai` SDK
+- Server-side function/tool calling
+- Database-grounded Fact Sheet retrieval
+- Zod-validated AI tool arguments
+
+### Background Jobs
+- Inngest for scheduled reminder processing
+- Persistent ReminderJob records in PostgreSQL
+- Mock notification provider
+- Idempotency and bounded retries
+
+### Testing
+- Vitest for unit and integration tests
+- React Testing Library for component tests
+- Playwright for end-to-end tests
+- ESLint and TypeScript checks
+
+### Deployment & DevOps
+- Vercel for application deployment
+- Neon for managed PostgreSQL
+- Inngest Cloud for background jobs
+- GitHub for version control
+- GitHub Actions for automated CI checks
+
+### Additional Utilities
+- date-fns and date-fns-tz for date and timezone handling
+- npm as the package manager
+
+### Architecture Rules
+- Build a modular monolith, not microservices.
+- Keep business logic inside independent service modules.
+- Never place database business logic directly inside UI components.
+- Never expose secrets or API keys to the browser.
+- Use Asia/Kolkata as the application display timezone.
+- Use UTC for database timestamp storage.
+- Do not add Redis, Kafka, Kubernetes or unnecessary infrastructure.
+- Do not install unnecessary dependencies without explaining their purpose.
+- Maintain a clean and consistent project structure.
+
+---
+
+## 4. The 8 Sequential Milestones
+- **Milestone 1:** Project Scaffold, Folder Structure, `.env.example`, & Initial `docs/TDD_DRAFT.md` + `deployment.md`
+- **Milestone 2:** Prisma Schema (all 13 models + partial unique index for active bookings) & Date-Aware Seed Script (`prisma/seed.ts`)
+- **Milestone 3:** Core Backend Services (`LeadService` deduplication, `BookingService` atomic lock + cancellation rebooking, `ReminderService` job processor) & Integration Tests
+- **Milestone 4:** `AIConciergeService` (EN/HI/GU, `VERIFIED`-only Fact Sheet retrieval with portfolio/project scope, Zod tool calling, automatic human handoff)
+- **Milestone 5:** Buyer Mobile Concierge UI (Minimalist aesthetic, language toggle, DPDP consent & opt-out, live slot picker, RERA disclaimer)
+- **Milestone 6:** Sales Executive & Sales Head Portal (RBAC auth, Unified Lead List, Handoff Queue, Fact Sheet Approval Editor, Slot Manager)
+- **Milestone 7:** Source Attribution & ROI Dashboard + Complete Vitest Suite
+- **Milestone 8:** Final Submission Packaging (Export `TDD.pdf`/`docx` with GitHub & Live URLs at top + `deployment.md` into a clean `<25MB` `.zip` containing ONLY those two files and zero secrets)

@@ -180,3 +180,44 @@ Do not randomly change, replace or introduce alternative technologies without di
 - **Milestone 6:** Sales Executive & Sales Head Portal (RBAC auth, Unified Lead List, Handoff Queue, Fact Sheet Approval Editor, Slot Manager)
 - **Milestone 7:** Source Attribution & ROI Dashboard + Complete Vitest Suite
 - **Milestone 8:** Final Submission Packaging (Export `TDD.pdf`/`docx` with GitHub & Live URLs at top + `deployment.md` into a clean `<25MB` `.zip` containing ONLY those two files and zero secrets)
+
+### Project Continuity and Context Preservation
+
+1. `docs/PROJECT_STATE.md` is the authoritative handover document for the current project state.
+2. Update it at the end of every milestone and whenever a significant architecture decision changes.
+3. Record completed work, pending work, test results, known issues, Git commit hashes and the exact next action.
+4. Never assume an unfinished task has been completed.
+5. Never silently reverse an approved architecture decision.
+6. Before starting a new milestone, review the project rules, current project state and relevant TDD sections.
+7. If conversation context is missing or uncertain, ask for the relevant project documentation instead of guessing.
+8. Work milestone by milestone. Do not skip verification, documentation updates or Git checkpoints.
+9. Maintain a decision log with decision IDs, rationale and consequences.
+10. The repository, not conversational memory, is the ultimate source of truth.
+
+### Learning-First Development Protocol
+
+The developer is actively learning the codebase and must understand the implementation, not merely receive generated code.
+
+Follow these requirements for every milestone:
+
+1. Before implementation, explain the concepts, architecture, files involved and expected execution flow.
+2. Implement in small, logically connected phases rather than generating the entire milestone at once.
+3. After each phase, provide a code walkthrough covering:
+   - What each important file does.
+   - Why the code exists.
+   - How the execution flows through the application.
+   - Important functions, classes, types and database operations.
+   - Why this approach was chosen over alternatives.
+4. Explain unfamiliar programming concepts with practical examples from ENQUIVO.
+5. Identify which parts the developer should understand deeply and which implementation details can be learned when needed.
+6. Give the developer small hands-on exercises, such as modifying a function, writing a test, debugging an issue or adding a validation rule.
+7. Do not immediately provide exercise solutions. Let the developer attempt them first, then review and explain.
+8. Teach debugging by explaining error messages, root causes and verification techniques.
+9. At the end of each milestone, prepare an interview-defence section containing:
+   - Architecture questions.
+   - Code-level questions.
+   - Database and system-design questions.
+   - Failure scenarios and debugging questions.
+10. Never claim the developer understands a feature simply because the AI implemented it.
+
+The objective is to develop genuine engineering understanding and independent implementation ability while delivering ENQUIVO.

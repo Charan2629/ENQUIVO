@@ -104,17 +104,42 @@ createdb enquivo_dev
 ### Migrations & Seeding
 
 ```bash
-# Apply migrations
-npx prisma migrate dev
+# Validate schema syntax (offline)
+npx prisma validate
 
-# Reset DB and re-seed (useful during development)
-npx prisma migrate reset
+# Generate Prisma Client (offline)
+npx prisma generate
 
-# Seed only (if DB is already migrated)
+# Create and apply initial migration to PostgreSQL
+npx prisma migrate dev --name init
+
+# Seed the database with date-aware fixture data
 npx prisma db seed
+# or: npm run db:seed
+
+# Reset DB and re-seed (cleans and re-applies migrations)
+npx prisma migrate reset
 
 # Open Prisma Studio (visual DB browser)
 npx prisma studio
+```
+
+### PostgreSQL Partial Unique Index Verification
+
+After migration, verify the partial index directly in PostgreSQL:
+
+```sql
+SELECT indexname, indexdef
+FROM pg_indexes
+WHERE tablename = 'site_visits'
+  AND indexname = 'one_active_booking_per_slot';
+```
+
+**Expected Output (once applied to PostgreSQL):**
+```
+indexname                   | indexdef
+----------------------------+-------------------------------------------------------------------------------------------------------------------
+one_active_booking_per_slot | CREATE UNIQUE INDEX one_active_booking_per_slot ON public.site_visits USING btree (slot_id) WHERE (booking_status = 'CONFIRMED'::"BookingStatus")
 ```
 
 ---

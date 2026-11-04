@@ -1,0 +1,366 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["partialIndexes"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================================
+// ENUMS
+// ============================================================================
+
+enum UserRole {
+  BUYER
+  SALES_EXEC
+  SALES_HEAD
+}
+
+enum FactSheetScope {
+  PORTFOLIO
+  PROJECT_1
+  PROJECT_2
+}
+
+enum FactSheetStatus {
+  VERIFIED
+  DRAFT
+  UNVERIFIED
+}
+
+enum LeadSource {
+  PROPERTY_PORTAL
+  SOCIAL_MEDIA_AD
+  WEBSITE
+  HOARDING_CALL
+  REFERRAL
+  OTHER
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+}
+
+enum AttendanceOutcome {
+  UNRECORDED
+  ATTENDED
+  NO_SHOW
+}
+
+enum VisitSlotStatus {
+  AVAILABLE
+  BOOKED
+}
+
+enum ReminderType {
+  REMINDER_24H
+  REMINDER_2H
+}
+
+enum ReminderStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+}
+
+enum HandoffStatus {
+  PENDING
+  ASSIGNED
+  RESOLVED
+}
+
+enum EscalationReason {
+  MISSING_PROJECT_INFO
+  UNLISTED_AMENITY
+  PRICE_NEGOTIATION
+  BUYER_REQUESTED
+  OTHER
+}
+
+enum ConversationLanguage {
+  EN
+  HI
+  GU
+}
+
+enum ChatMessageRole {
+  USER
+  AI
+}
+
+// ============================================================================
+// 1. User
+// ============================================================================
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  role         UserRole @default(BUYER)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  createdFacts     FactSheet[] @relation("FactSheetCreator")
+  verifiedFacts    FactSheet[] @relation("FactSheetVerifier")
+  assignedHandoffs Handoff[]   @relation("HandoffAssignee")
+
+  @@map("users")
+}
+
+// ============================================================================
+// 2. Project
+// ============================================================================
+model Project {
+  id         String   @id @default(cuid())
+  name       String
+  location   String
+  reraNumber String   @default("DEMO-ONLY-NOT-VERIFIED") @map("rera_number")
+  totalUnits Int      @map("total_units")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  factSheets      FactSheet[]
+  interestedLeads Lead[]
+
+  @@map("projects")
+}
+
+// ============================================================================
+// 3. FactSheet
+// ============================================================================
+model FactSheet {
+  id           String          @id @default(cuid())
+  key          String
+  value        String          @db.Text
+  scope        FactSheetScope  @default(PORTFOLIO)
+  status       FactSheetStatus @default(UNVERIFIED)
+  isActive     Boolean         @default(true) @map("is_active")
+  projectId    String?         @map("project_id")
+  createdById  String          @map("created_by_id")
+  verifiedById String?         @map("verified_by_id")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+
+  // Relations
+  project    Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy  User     @relation("FactSheetCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  verifiedBy User?    @relation("FactSheetVerifier", fields: [verifiedById], references: [id], onDelete: SetNull)
+
+  @@index([status, isActive, scope])
+  @@map("fact_sheets")
+}
+
+// ============================================================================
+// 4. Lead
+// ============================================================================
+model Lead {
+  id              String     @id @default(cuid())
+  leadCode        String     @unique @map("lead_code")
+  name            String
+  phone           String?    @unique
+  email           String?
+  source          LeadSource
+  projectId       String?    @map("project_id")
+  configuration   String?
+  firstResponseAt DateTime?  @map("first_response_at")
+  isAnonymized    Boolean    @default(false) @map("is_anonymized")
+  deletedAt       DateTime?  @map("deleted_at")
+  createdAt       DateTime   @default(now()) @map("created_at")
+  updatedAt       DateTime   @updatedAt @map("updated_at")
+
+  // Relations
+  project       Project?          @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  sourceEvents  LeadSourceEvent[]
+  consentRecord ConsentRecord?
+  conversations Conversation[]
+  siteVisits    SiteVisit[]
+
+  @@index([source])
+  @@index([deletedAt])
+  @@map("leads")
+}
+
+// ============================================================================
+// 5. LeadSourceEvent
+// ============================================================================
+model LeadSourceEvent {
+  id         String     @id @default(cuid())
+  leadId     String     @map("lead_id")
+  source     LeadSource
+  campaign   String?
+  occurredAt DateTime   @default(now()) @map("occurred_at")
+
+  // Relations
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@map("lead_source_events")
+}
+
+// ============================================================================
+// 6. ConsentRecord
+// ============================================================================
+model ConsentRecord {
+  id          String    @id @default(cuid())
+  leadId      String    @unique @map("lead_id")
+  consentText String    @db.Text @map("consent_text")
+  consentedAt DateTime  @map("consented_at")
+  optedOut    Boolean   @default(false) @map("opted_out")
+  optOutAt    DateTime? @map("opt_out_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  lead Lead @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@map("consent_records")
+}
+
+// ============================================================================
+// 7. Conversation
+// ============================================================================
+model Conversation {
+  id        String               @id @default(cuid())
+  leadId    String               @map("lead_id")
+  language  ConversationLanguage @default(EN)
+  startedAt DateTime             @default(now()) @map("started_at")
+  endedAt   DateTime?            @map("ended_at")
+
+  // Relations
+  lead     Lead          @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  messages ChatMessage[]
+  handoff  Handoff?
+
+  @@index([leadId])
+  @@map("conversations")
+}
+
+// ============================================================================
+// 8. ChatMessage
+// ============================================================================
+model ChatMessage {
+  id               String          @id @default(cuid())
+  conversationId   String          @map("conversation_id")
+  role             ChatMessageRole
+  content          String          @db.Text
+  groundingFactIds String[]        @default([]) @map("grounding_fact_ids")
+  createdAt        DateTime        @default(now()) @map("created_at")
+
+  // Relations
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId])
+  @@map("chat_messages")
+}
+
+// ============================================================================
+// 9. Handoff
+// ============================================================================
+model Handoff {
+  id               String           @id @default(cuid())
+  conversationId   String           @unique @map("conversation_id")
+  escalationReason EscalationReason @map("escalation_reason")
+  summary          String           @db.Text
+  status           HandoffStatus    @default(PENDING)
+  assignedToId     String?          @map("assigned_to_id")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  resolvedAt       DateTime?        @map("resolved_at")
+
+  // Relations
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  assignedTo   User?        @relation("HandoffAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@map("handoffs")
+}
+
+// ============================================================================
+// 10. VisitSlot
+// ============================================================================
+model VisitSlot {
+  id        String          @id @default(cuid())
+  startsAt  DateTime        @map("starts_at")
+  endsAt    DateTime        @map("ends_at")
+  status    VisitSlotStatus @default(AVAILABLE)
+  location  String          @default("Enquivo Sales Gallery, Ahmedabad")
+  createdAt DateTime        @default(now()) @map("created_at")
+  updatedAt DateTime        @updatedAt @map("updated_at")
+
+  // Relations
+  siteVisits SiteVisit[]
+
+  @@index([startsAt, status])
+  @@map("visit_slots")
+}
+
+// ============================================================================
+// 11. SiteVisit
+// ============================================================================
+model SiteVisit {
+  id                String            @id @default(cuid())
+  slotId            String            @map("slot_id")
+  leadId            String            @map("lead_id")
+  bookingStatus     BookingStatus     @default(CONFIRMED) @map("booking_status")
+  attendanceOutcome AttendanceOutcome @default(UNRECORDED) @map("attendance_outcome")
+  bookedAt          DateTime          @default(now()) @map("booked_at")
+  cancelledAt       DateTime?         @map("cancelled_at")
+  attendedAt        DateTime?         @map("attended_at")
+
+  // Relations
+  slot         VisitSlot     @relation(fields: [slotId], references: [id], onDelete: Restrict)
+  lead         Lead          @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  reminderJobs ReminderJob[]
+
+  // Partial unique index: At most one CONFIRMED booking per slot
+  @@unique([slotId], map: "one_active_booking_per_slot", where: raw("booking_status = 'CONFIRMED'"))
+  @@index([leadId, bookingStatus])
+  @@index([attendanceOutcome])
+  @@map("site_visits")
+}
+
+// ============================================================================
+// 12. ReminderJob
+// ============================================================================
+model ReminderJob {
+  id             String         @id @default(cuid())
+  siteVisitId    String         @map("site_visit_id")
+  reminderType   ReminderType   @map("reminder_type")
+  status         ReminderStatus @default(PENDING)
+  idempotencyKey String         @unique @map("idempotency_key")
+  scheduledFor   DateTime       @map("scheduled_for")
+  attempts       Int            @default(0)
+  maxAttempts    Int            @default(3) @map("max_attempts")
+  lastAttemptAt  DateTime?      @map("last_attempt_at")
+  sentAt         DateTime?      @map("sent_at")
+  failureReason  String?        @map("failure_reason")
+  simulationNote String?        @map("simulation_note")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  // Relations
+  siteVisit SiteVisit @relation(fields: [siteVisitId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledFor])
+  @@map("reminder_jobs")
+}
+
+// ============================================================================
+// 13. SourceSpend
+// ============================================================================
+model SourceSpend {
+  id          String     @id @default(cuid())
+  source      LeadSource
+  monthYear   String     @map("month_year") // "YYYY-MM"
+  amountPaise BigInt     @map("amount_paise") // Stored in paise for integer precision
+  note        String?
+  createdAt   DateTime   @default(now()) @map("created_at")
+
+  @@unique([source, monthYear], name: "unique_source_month")
+  @@map("source_spends")
+}

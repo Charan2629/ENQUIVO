@@ -100,13 +100,13 @@ ENQUIVO is a **modular monolith** built on Next.js 16 App Router. Business logic
 | Icons | Lucide React | (Milestone 5) |
 | Charts | Recharts | (Milestone 7) |
 | Forms | React Hook Form + Zod | (Milestone 5) |
-| ORM | Prisma | (Milestone 2) |
-| Database | Neon PostgreSQL | hosted |
+| ORM | Prisma | 7.10.1 |
+| Database | Neon PostgreSQL (@prisma/adapter-pg) | hosted |
 | Auth | Auth.js v5 + Prisma adapter | (Milestone 6) |
 | Password Hashing | Argon2id (`@node-rs/argon2`) | (Milestone 6) |
 | AI | Google Gemini API (`@google/genai`) | (Milestone 4) |
 | Background Jobs | Inngest | (Milestone 3) |
-| Date Handling | date-fns + date-fns-tz | (Milestone 2) |
+| Date Handling | date-fns (4.4.0) + date-fns-tz (3.2.0) | 4.x / 3.x |
 | Unit Tests | Vitest + React Testing Library | (Milestone 3) |
 | E2E Tests | Playwright | (Milestone 7) |
 | Deployment | Vercel | (Milestone 8) |
@@ -117,34 +117,40 @@ ENQUIVO is a **modular monolith** built on Next.js 16 App Router. Business logic
 
 ## 4. Database Schema — 13 Models
 
-> **Detail:** Full Prisma schema defined in Milestone 2.
+All 13 models are defined in `prisma/schema.prisma` targeting PostgreSQL (hosted on Neon) using Prisma 7.10.1 with `previewFeatures = ["partialIndexes"]`.
 
-| # | Model | Key Purpose |
-|---|---|---|
-| 1 | `User` | Roles: `BUYER`, `SALES_EXEC`, `SALES_HEAD`. `SALES_HEAD` governs Fact Sheet editor and daily flagged-chat review. |
-| 2 | `Project` | Represents a single real estate project (Project 1 or Project 2, both in Ahmedabad). |
-| 3 | `FactSheet` | Stores verified product facts. Fields: `scope` (`PORTFOLIO`\|`PROJECT_1`\|`PROJECT_2`), `status` (`VERIFIED`\|`DRAFT`\|`UNVERIFIED`). |
-| 4 | `Lead` | Core lead record. Stores first-touch source (immutable after deduplication merge). |
-| 5 | `LeadSourceEvent` | Preserves full source history when duplicate phone numbers merge; enforces first-touch attribution integrity. |
-| 6 | `ConsentRecord` | Tracks DPDP Act 2023 explicit consent timestamp and opt-out state. One record per Lead. |
-| 7 | `Conversation` | Groups a series of chat messages with a Lead. Tracks language (`EN`\|`HI`\|`GU`). |
-| 8 | `ChatMessage` | Persists individual buyer and AI turns with role and grounding metadata. |
-| 9 | `Handoff` | Stores AI conversation summary, escalation reason, handoff status, assigned salesperson. |
-| 10 | `VisitSlot` | Represents a bookable time slot. Status: `AVAILABLE` \| `BOOKED`. |
-| 11 | `SiteVisit` | A booking record. Status: `CONFIRMED` \| `CANCELLED` \| `ATTENDED` \| `NO_SHOW`. Partial unique index enforces at-most-one active (`CONFIRMED`) booking per slot. |
-| 12 | `ReminderJob` | Tracks 24h and 2h pre-visit reminder jobs. Includes `idempotencyKey`, `maxAttempts = 3`, state machine: `PENDING → PROCESSING → SENT/FAILED`. |
-| 13 | `SourceSpend` | Monthly ad spend per source channel, used for `costPerVisit` ROI calculation. |
+| # | Model | Key Fields & Constraints | Audit & Delete Policy |
+|---|---|---|---|
+| 1 | `User` | `id` (cuid), `email` (unique), `passwordHash`, `name`, `role` (`BUYER`, `SALES_EXEC`, `SALES_HEAD`) | Governs Fact Sheet creation/verification and handoff assignment. |
+| 2 | `Project` | `id`, `name`, `location`, `reraNumber` (`DEMO-ONLY-NOT-VERIFIED`), `totalUnits` (210 each) | Cascades to scoped FactSheets; referenced by Leads via `projectId` (SetNull). |
+| 3 | `FactSheet` | `id`, `key`, `value` (Text), `scope` (`PORTFOLIO`, `PROJECT_1`, `PROJECT_2`), `status` (`VERIFIED`, `DRAFT`, `UNVERIFIED`), `isActive` (Boolean, default: true) | Explicit relations: `createdBy` (Restrict), `verifiedBy` (SetNull). AI only retrieves `status = VERIFIED AND isActive = true`. |
+| 4 | `Lead` | `id`, `leadCode` (unique), `name`, `phone` (unique, nullable in DB for anonymisation, required by Zod on creation), `email`, `source` (immutable first-touch), `projectId` (FK, SetNull), `configuration`, `firstResponseAt`, `isAnonymized`, `deletedAt` | DPDP Soft-delete: phone set to NULL to prevent unique collisions across anonymised records; visits/attribution preserved for audit. Transcript/handoff PII redaction scheduled for M3/M4. |
+| 5 | `LeadSourceEvent` | `id`, `leadId`, `source`, `campaign`, `occurredAt` | Multi-touch attribution log. Retains full history when duplicate phone merges. Cascade on Lead. |
+| 6 | `ConsentRecord` | `id`, `leadId` (unique, 1:1), `consentText`, `consentedAt`, `optedOut`, `optOutAt` | DPDP Act 2023 explicit digital consent tracking and opt-out state. Cascade on Lead. |
+| 7 | `Conversation` | `id`, `leadId`, `language` (`EN`, `HI`, `GU`), `startedAt`, `endedAt` | Restrict deletion on Lead to preserve conversation audit history. |
+| 8 | `ChatMessage` | `id`, `conversationId`, `role` (`USER`, `AI`), `content` (Text), `groundingFactIds` (text[]) | Cascade on Conversation. Stores exact grounding fact IDs retrieved for each turn. |
+| 9 | `Handoff` | `id`, `conversationId` (unique, 1:1), `escalationReason`, `summary`, `status`, `assignedToId` | Escalation queue for Sales Execs. Assigned to User (SetNull). Cascade on Conversation. |
+| 10 | `VisitSlot` | `id`, `startsAt`, `endsAt`, `status` (`AVAILABLE`, `BOOKED`), `location` | Indexed on `[startsAt, status]`. Only future slots are released upon cancellation. |
+| 11 | `SiteVisit` | `id`, `slotId`, `leadId`, `bookingStatus` (`CONFIRMED`, `CANCELLED`, `COMPLETED`), `attendanceOutcome` (`UNRECORDED`, `ATTENDED`, `NO_SHOW`), `bookedAt`, `cancelledAt`, `attendedAt` | Restrict on slot and lead. Protected by partial unique index on active bookings. |
+| 12 | `ReminderJob` | `id`, `siteVisitId`, `reminderType` (`REMINDER_24H`, `REMINDER_2H`), `status` (`PENDING`, `PROCESSING`, `SENT`, `FAILED`), `idempotencyKey` (unique), `scheduledFor`, `simulationNote` | Idempotent background jobs with bounded retry (`maxAttempts = 3`). Cascade on SiteVisit. |
+| 13 | `SourceSpend` | `id`, `source`, `monthYear`, `amountPaise` (BigInt), `note` | Unique `[source, monthYear]`. Currency stored in paise to eliminate floating-point drift. |
 
-### Partial Unique Index (concurrency safety)
+### Partial Unique Index (Concurrency Defense)
 
-```sql
--- Enforces: at most one CONFIRMED booking per slot
-CREATE UNIQUE INDEX one_active_booking_per_slot
-  ON "SiteVisit"("slotId")
-  WHERE status = 'CONFIRMED';
+```prisma
+@@unique([slotId], map: "one_active_booking_per_slot", where: raw("booking_status = 'CONFIRMED'"))
 ```
 
-This is implemented via Prisma's `@@index` with `map` + raw migration SQL. Cancelled bookings (`status = 'CANCELLED'`) are excluded from the index, allowing re-booking after cancellation.
+Generated PostgreSQL DDL:
+```sql
+CREATE UNIQUE INDEX "one_active_booking_per_slot"
+  ON "site_visits"("slot_id")
+  WHERE (booking_status = 'CONFIRMED'::"BookingStatus");
+```
+
+- **Guarantees:** At most one `CONFIRMED` booking can actively hold any `VisitSlot`.
+- **Cancellation & Rebooking:** Transitioning a booking to `CANCELLED` removes it from the partial index predicate, permitting the slot to be rebooked immediately while retaining the historical audit record.
+- **Completed Past Bookings:** Marked `COMPLETED` and `BOOKED` historically; temporal guards (`startsAt > NOW()`) prevent past slots from being scheduled in the future.
 
 ---
 
@@ -343,6 +349,11 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 | D-006 | 2026-11-03 | Partial unique index on `SiteVisit.slotId WHERE status = 'CONFIRMED'` | Prevents double-booking at the database level regardless of application logic | App-level lock — rejected (race condition risk under concurrent requests) |
 | D-007 | 2026-11-03 | UTC storage, IST display via `date-fns-tz` | UTC in DB is universal best practice; IST conversion at display layer avoids timezone bugs | Storing IST — rejected (DST changes, international complications) |
 | D-008 | 2026-11-03 | Gemini API key strictly server-side only | Security requirement; keys in `NEXT_PUBLIC_*` would be exposed in browser bundle | Client-side key — rejected (critical security risk) |
+| D-009 | 2026-11-03 | Prisma 7.10.1 stable with `@prisma/adapter-pg` over Prisma 8 RC | Prisma 8 is an unstable RC (8.0.0-rc.29) with breaking package splits and experimental TypeScript migrations; Prisma 7.10.1 is battle-tested, supports Node 24, and provides native `previewFeatures = ["partialIndexes"]` | Prisma 8 RC — rejected due to production stability risk |
+| D-010 | 2026-11-03 | `amountPaise BigInt` with safe DTO serialization | JavaScript `Number.MAX_SAFE_INTEGER` = 2^53 - 1 = 9,007,199,254,740,991, which in paise represents ~₹90.07 trillion (~₹90.07 lakh crore INR). The 32-bit signed integer limitation belongs strictly to PostgreSQL `INTEGER` (Prisma `Int`), which caps at 2^31 - 1 = 2,147,483,647 paise (~₹2.14 crore), easily exceeded by real estate marketing budgets. PostgreSQL `BIGINT` (Prisma `BigInt`) provides 64-bit storage up to ~9 x 10^18 paise, eliminating database overflow. Safe DTO serialization (`src/lib/serializers.ts`) converts BigInt values to numeric strings/numbers to prevent runtime `TypeError` in JSON API responses | PostgreSQL INTEGER / Prisma Int — rejected due to 32-bit database column capacity overflow; Float — rejected due to IEEE-754 decimal drift |
+| D-011 | 2026-11-03 | `FactSheet` dual-flag (`status = VERIFIED AND isActive = true`) | AI Concierge grounding strictly filters for active, verified facts. Deactivating outdated facts without mutating approval history preserves governance records | Single status flag — rejected because soft-deactivation would require demoting to UNVERIFIED |
+| D-012 | 2026-11-03 | Decoupling booking lifecycle (`BookingStatus`) from attendance outcome (`AttendanceOutcome`) | The assessment brief confirms Hardik Patel booked on Nov 1, 2026, but does not confirm attendance. Separating status preserves data fidelity without falsifying attendance records | Combined status — rejected because it conflates scheduling with physical presence |
+| D-013 | 2026-11-03 | DPDP Soft-delete, nullable unique phone, and transcript PII redaction | `Lead.phone` is declared nullable (`String?`) with `@unique`. In PostgreSQL standard SQL semantics, multiple `NULL` values do not violate a unique constraint. While standard lead ingestion requires a phone via Zod, setting `phone = NULL` upon DPDP erasure prevents unique collision across multiple anonymized leads. Furthermore, conversation transcripts (`ChatMessage.content`) and handoff summaries (`Handoff.summary`) must be scrubbed of buyer PII (regex pattern matching on phones/emails); this operational redaction logic is scheduled for implementation in Milestone 3 (`LeadService`) and Milestone 4 (`AIConciergeService`). This privacy-aware design assumption balances DPDP erasure with statutory record-retention requirements | Cascading hard delete — rejected because it violates audit integrity and statutory record-keeping |
 
 ---
 
@@ -357,6 +368,9 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 | A-005 | The 420 apartments and price range (₹65L–₹1.2Cr) are taken directly from the client brief verbatim | `[ASSUMPTION]` | If figures are incorrect, FactSheet seed must be updated |
 | A-006 | `SALES_HEAD` role is introduced to govern Fact Sheet editor and daily flagged-chat review (not in original scope) | `[ASSUMPTION]` | Role design may need adjustment based on actual org structure |
 | A-007 | "Website" as a lead source channel exists alongside the 3 briefed channels | `[ASSUMPTION]` | Drop if client confirms only 3 channels (portal, social, hoarding) |
+| A-008 | Historical reminders seeded as SENT represent simulated test data | `[ASSUMPTION — Simulated Historical Demonstration Record]` | Must not be presented as carrier delivery receipts |
+| A-009 | Project names "Prakriti Heights" and "Vaastu Enclave" are illustrative demo titles for Project 1 and Project 2 | `[ASSUMPTION]` | Can be updated to official client brand names |
+| A-010 | Soft-deletion with nullable unique phone (`Lead.phone = NULL`) and chat transcript/handoff PII redaction is a privacy-aware design assumption balancing DPDP compliance with statutory audit retention. Service-level redaction logic is scheduled for implementation in M3/M4 | `[ASSUMPTION — Privacy & Data Retention Design]` | Specific corporate legal counsel policies may mandate different retention periods or irreversible scrubbing schedules |
 
 ---
 
@@ -365,7 +379,13 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 | Milestone | Description | Status | Commit |
 |---|---|---|---|
 | M1 | Project Scaffold, Folder Structure, `.env.example`, `docs/TDD_DRAFT.md`, `deployment.md` | ✅ Complete | *(pending)* |
-| M2 | Prisma Schema (13 models + partial unique index) & Date-Aware Seed Script | ⬜ Pending | — |
+| M2 | Prisma Schema (13 models + partial unique index) & Date-Aware Seed Script | ✅ Complete | *(pending)* |
+| M3 | Core Backend Services (LeadService, BookingService, ReminderService) & Integration Tests | ⬜ Pending | — |
+| M4 | AIConciergeService (EN/HI/GU, VERIFIED-only facts, Zod tool calling, handoff) | ⬜ Pending | — |
+| M5 | Buyer Mobile Concierge UI (language toggle, DPDP consent, slot picker, RERA disclaimer) | ⬜ Pending | — |
+| M6 | Sales Executive & Sales Head Portal (RBAC auth, Lead List, Handoff Queue, Fact Sheet Editor, Slot Manager) | ⬜ Pending | — |
+| M7 | Source Attribution & ROI Dashboard + Complete Vitest Suite | ⬜ Pending | — |
+| M8 | Final Submission Packaging (TDD.pdf + deployment.md zip, <25MB, zero secrets) | ⬜ Pending | — |
 | M3 | Core Backend Services (LeadService, BookingService, ReminderService) & Integration Tests | ⬜ Pending | — |
 | M4 | AIConciergeService (EN/HI/GU, VERIFIED-only facts, Zod tool calling, handoff) | ⬜ Pending | — |
 | M5 | Buyer Mobile Concierge UI (language toggle, DPDP consent, slot picker, RERA disclaimer) | ⬜ Pending | — |

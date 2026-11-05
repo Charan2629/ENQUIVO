@@ -341,6 +341,79 @@ ENQUIVO receives leads from four distinct channels: Property Portals, Social Med
 
 ---
 
+### Phase 3: BookingService Implementation, Concurrency Defense & Integration Tests
+- **Date:** 2026-11-05 (Late Afternoon, ~18:05 IST)
+- **Task:** Implementation and verification of booking validation schemas (`src/lib/validations/booking.ts`), domain service (`src/services/booking/booking.service.ts`), and end-to-end integration tests (`tests/integration/booking-service.test.ts`) against the isolated Neon test branch. Independent code review determination: **APPROVED**.
+- **Git Commit Hash:** Uncommitted (Working tree change).
+
+#### 1. Problem & Requirements Addressed
+Appointment scheduling in residential real estate requires strict concurrency guarantees, temporal validity, and compliance with cancellation and attendance audits:
+1. **Atomic Double-Booking Prevention:** Guarantee that concurrent requests for the same appointment slot cannot result in duplicate confirmed bookings or corrupted slot states.
+2. **Active Lead Verification:** Enforce that bookings are only permitted for active leads (`deletedAt: null`).
+3. **Temporal Validity & Relative Reminder Scheduling:** Ensure slots whose start time has already passed cannot be booked. Automatically stage pre-visit reminders (24-hour and 2-hour) relative to `startsAt`, while omitting any reminder whose scheduled execution time is in the past.
+4. **Non-Destructive Cancellation:** Ensure cancelled bookings retain their historical `SiteVisit` row in PostgreSQL for marketing attribution (`bookingStatus = CANCELLED`, `cancelledAt = NOW()`), release `VisitSlot` back to `AVAILABLE` only if its start time remains in the future, and delete only `PENDING` reminder jobs without misusing `FAILED`.
+5. **Decoupled Attendance Recording:** Support recording attendance (`ATTENDED` vs. `NO_SHOW`) for both `CONFIRMED + UNRECORDED` visits (once the visit has started) and `COMPLETED + UNRECORDED` visits (such as historical seed data), without altering `VisitSlot` status or permitting double recording.
+
+#### 2. Why We Chose This Approach
+- **Atomic Conditional Slot Update (`updateMany`) over Read-Modify-Write:** An in-memory check (`if (slot.status === 'AVAILABLE')`) is susceptible to lost updates when two requests read simultaneously. Executing `UPDATE visit_slots SET status = 'BOOKED' WHERE id = $1 AND status = 'AVAILABLE' AND starts_at > NOW()` within a Prisma transaction ensures row-level locking at the database level. Exactly one transaction updates 1 row; concurrent attempts update 0 rows and immediately receive `SlotUnavailableError`.
+- **Two-Layer Concurrency Defense:** PostgreSQL's partial unique index `one_active_booking_per_slot` (`WHERE booking_status = 'CONFIRMED'`) acts as an immutable database-level fallback behind the conditional update. Any collision raises error `23505` (`P2002`), which is caught and mapped to `SlotUnavailableError`.
+- **Deleting Only PENDING Reminders over Marking FAILED:** `ReminderStatus` in Prisma schema comprises `PENDING`, `PROCESSING`, `SENT`, `FAILED`. Marking cancelled jobs as `FAILED` would corrupt delivery failure metrics and error logs. Deleting `PENDING` jobs cleans the dispatch queue safely, while historical `SENT` reminders remain intact.
+- **Constructor Dependency Injection (`constructor(private db: PrismaClient = defaultPrisma)`):** Enables testing against the isolated Neon test branch (`testPrisma`) while keeping the production route handler singleton untouched.
+
+#### 3. Implementation Summary
+- **Validation Layer (`src/lib/validations/booking.ts`):** Authored Zod schemas (`getAvailableSlotsSchema`, `bookVisitSchema`, `cancelBookingSchema`, `recordAttendanceSchema`) and exported TypeScript types.
+- **Domain Service (`src/services/booking/booking.service.ts`):** Implemented `BookingService` with custom error classes (`SlotUnavailableError`, `BookingNotFoundError`, `BookingConflictError`) and the 4 core methods:
+  - `getAvailableSlots(input)`: Queries future `AVAILABLE` slots with optional date range filtering.
+  - `bookVisit(input)`: Validates active lead, executes atomic conditional slot update, inserts `CONFIRMED` visit, and stages future pre-visit reminders (24h and 2h).
+  - `cancelBooking(input)`: Validates `CONFIRMED` status, sets `CANCELLED` and `cancelledAt`, releases future slots to `AVAILABLE`, and deletes `PENDING` reminders.
+  - `recordAttendance(input)`: Validates visit is not `CANCELLED` and attendance is `UNRECORDED`, enforces post-start timing for `CONFIRMED` visits, transitions to `COMPLETED`, records `attendedAt` for `ATTENDED`, and preserves slot status.
+- **Integration Tests (`tests/integration/booking-service.test.ts`):** Authored 5 integration tests against isolated Neon test branch (`ep-mute-butterfly-b3a54tpa`):
+  1. Successful booking, slot reservation, and reminder staging (24h & 2h).
+  2. Concurrent booking race condition via `Promise.all` (1 succeeds, 1 gets `SlotUnavailableError`).
+  3. Cancellation, future slot release, and deletion of pending reminder jobs.
+  4. Rebooking a released slot with a second lead while preserving historical cancelled visit.
+  5. Past-slot rejection and attendance recording for both confirmed visits and historical completed visits.
+- **Teardown Safety:** Tracked created `slotIds`, `visitIds`, and `leadIds` in sets; cleaned up child records (`ReminderJob`, `SiteVisit`) before parent records (`VisitSlot`, `Lead`) in `afterAll`.
+
+#### 4. Important Files Created / Modified
+- `src/lib/validations/booking.ts` — Validation schemas and types for booking operations.
+- `src/services/booking/booking.service.ts` — Core `BookingService` domain logic.
+- `tests/integration/booking-service.test.ts` — 5 integration tests against isolated Neon test branch.
+- `docs/PROJECT_STATE.md`, `docs/TDD_DRAFT.md`, `docs/ENGINEERING_LOG.md` — Documentation synchronization.
+
+#### 5. Technical Concepts Learned
+- **PostgreSQL Row-Level Locking in Conditional Updates:** How `UPDATE ... WHERE status = 'AVAILABLE'` acquires an exclusive row lock in PostgreSQL during evaluation, serializing concurrent writes without requiring explicit pessimistic locking (`SELECT ... FOR UPDATE`).
+- **Partial Unique Index as Fallback Lock:** How a filtered index `WHERE (booking_status = 'CONFIRMED')` allows multiple historical records to exist on the same `slot_id` while strictly preventing duplicate active reservations.
+- **Relative Scheduling Bounds:** Filtering reminder generation with `if (scheduledTime > now)` avoids staging obsolete jobs when visits are booked on short notice (e.g. booked 12 hours before visit, where the 24h reminder is already past).
+
+#### 6. Challenges Encountered & Resolutions
+- *Challenge 1 (ESLint unused import and explicit any):* In `tests/integration/booking-service.test.ts`, `beforeAll` was imported but unused, and `PromiseFulfilledResult<{ visit: any; slot: any }>` triggered `@typescript-eslint/no-explicit-any`.
+  *Resolution:* Removed unused `beforeAll` import and replaced `any` with `Awaited<ReturnType<typeof bookingService.bookVisit>>`.
+- *Challenge 2 (Independent Code Review Observation on P2002 target):* Code review noted that catching `P2002` could theoretically catch non-slot unique constraint violations if other models collided.
+  *Resolution:* Reviewed and noted as low severity: `visit.id` is a newly generated `cuid()` and reminder idempotency keys are scoped to that unique ID, making non-slot collisions impossible in practice; the primary gate (`updateMany`) catches 100% of slot collisions prior to insert.
+
+#### 7. Verification Performed & Results
+- `npm test` — ✅ PASS (38/38 unit tests passed across 2 files: `serializers.test.ts` [18] and `lead-validation.test.ts` [20])
+- `npm run test:integration` — ✅ PASS (14/14 integration tests passed across 3 files: `db-connection.test.ts` [4], `lead-service.test.ts` [5], and `booking-service.test.ts` [5] against `ep-mute-butterfly-b3a54tpa`)
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings)
+- `npx tsc --noEmit` — ✅ PASS (0 errors)
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 4/4 static pages prerendered in 3.1s)
+- **Independent Code Review:** **APPROVED** (all 10 review checklist criteria satisfied).
+
+#### 8. Division of Responsibility & AI Collaboration
+- **Developer Contribution:** Reviewed and approved `BookingService` architecture and state machine specifications; required alignment with existing `LeadService` DI convention; rejected unsupported cancellation reasons; specified clean deletion of `PENDING` reminders to prevent misusing `FAILED`; mandated attendance support for both `CONFIRMED + UNRECORDED` and `COMPLETED + UNRECORDED` visits; performed independent code review with determination APPROVED; and mandated document synchronization boundaries.
+- **AI Assistance:** Implemented validation schemas, authored `BookingService` with conditional updates and temporal guards, authored 5 integration tests against the isolated test branch, fixed ESLint typing warnings, executed verification suites, and updated documentation.
+
+#### 9. Interview Preparation & Defense
+- **How to explain this in an interview:** *"In Milestone 3 Phase 3, we implemented the booking lifecycle engine for ENQUIVO. Double-booking prevention in real estate is a mission-critical reliability requirement. We solved this using a two-layer defense: first, an atomic conditional update (`UPDATE visit_slots SET status = 'BOOKED' WHERE id = $1 AND status = 'AVAILABLE' AND starts_at > NOW()`) inside a Prisma transaction, which guarantees that only one concurrent request can reserve the slot; and second, our PostgreSQL partial unique index on `site_visits(slot_id) WHERE booking_status = 'CONFIRMED'`, which enforces single-active-booking integrity at the database engine level. On cancellation, the slot is released only if it is still in the future, while the historical `SiteVisit` record is preserved for marketing attribution. To prevent cancelled visits from receiving reminders, we delete only `PENDING` queue items rather than misusing the `FAILED` status. Finally, attendance recording supports both confirmed visits after their start time and historical completed visits, transitioning the booking to `COMPLETED` and recording `attendedAt` without modifying the slot status."*
+- **Likely Interview Question 1:** *Why do you execute an atomic conditional update if you already have a partial unique index on `SiteVisit`?*
+- **Technical Answer:** *Separation of concerns and optimal resource utilization. The `VisitSlot` is the calendar inventory item, while `SiteVisit` is the reservation agreement. If we relied solely on the partial unique index on `SiteVisit`, two concurrent requests would both successfully update `VisitSlot.status = 'BOOKED'`, and then the loser's transaction would abort during the `SiteVisit` insert. The loser's rollback would leave the slot booked by the winner, but the database connection was held longer and threw an unhandled constraint exception. By performing `updateMany({ where: { status: 'AVAILABLE' } })` as the primary gate, the loser fails immediately on row-count check (`count === 0`) before attempting to insert child records, while the partial unique index remains an immutable fallback against application-level race conditions.*
+- **Likely Interview Question 2:** *Why shouldn't you mark cancelled reminders as `FAILED` in the database?*
+- **Technical Answer:** *Domain semantic purity and observability. In operational message queuing, `FAILED` indicates a technical delivery failure (such as an invalid phone number, gateway timeout, or SMS network rejection) after exhausting retry attempts. If cancelled appointments marked their scheduled reminders as `FAILED`, operational dashboards and dead-letter queue monitors would show false spikes in messaging errors, misleading engineering and support teams. Deleting `PENDING` reminder jobs completely cleans the dispatch pipeline, while leaving historical `SENT` reminders intact for auditability.*
+- **Key Engineering Trade-off:** Deleting `PENDING` reminders vs. Adding a `CANCELLED` status to `ReminderStatus`. Adding `CANCELLED` requires altering the PostgreSQL enum via a database migration. In an MVP architecture where `ReminderJob` acts as an ephemeral execution queue with foreign key cascade to `SiteVisit`, deleting pending jobs achieves the identical operational outcome with zero database downtime or schema migrations.
+
+---
+
 ## Unverified Historical Information Register
 
 In accordance with strict verification rules, the following details cannot be independently verified from the repository git log and are explicitly recorded as unverified assumptions:

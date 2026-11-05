@@ -290,30 +290,48 @@ SiteVisit.status:   CONFIRMED ──► CANCELLED
                     CONFIRMED ──► NO_SHOW
 ```
 
-### Atomic Booking Transaction
+### Service Implementation & Atomic Booking Transaction
+`BookingService` (`src/services/booking/booking.service.ts`) and validation schemas (`src/lib/validations/booking.ts`) implement the core appointment lifecycle without schema changes or external packages.
 
-```typescript
-// Pseudocode — implemented in BookingService (Milestone 3)
-await prisma.$transaction(async (tx) => {
-  // Conditional update: slot must be AVAILABLE
-  const result = await tx.$executeRaw`
-    UPDATE "VisitSlot" SET status = 'BOOKED'
-    WHERE id = ${slotId} AND status = 'AVAILABLE'
-  `;
-  if (result !== 1) throw new ConflictError('Slot no longer available');
+#### 1. Atomic Booking (`bookVisit`)
+- Validates active lead status (`deletedAt: null`).
+- Executes atomic conditional reservation:
+  ```typescript
+  const updateResult = await tx.visitSlot.updateMany({
+    where: {
+      id: slotId,
+      status: VisitSlotStatus.AVAILABLE,
+      startsAt: { gt: now },
+    },
+    data: { status: VisitSlotStatus.BOOKED },
+  });
+  if (updateResult.count !== 1) throw new SlotUnavailableError("Slot is no longer available for booking");
+  ```
+- Creates `SiteVisit` with `bookingStatus = CONFIRMED` and `attendanceOutcome = UNRECORDED`.
+- Stages 24h (`REMINDER_24H`) and 2h (`REMINDER_2H`) `ReminderJob` records relative to `startsAt`, strictly excluding past times (`scheduledFor > now`).
+- Partial unique index `one_active_booking_per_slot` (`WHERE booking_status = 'CONFIRMED'`) acts as a second line of defence against concurrent insertions.
 
-  // Insert CONFIRMED SiteVisit
-  const visit = await tx.siteVisit.create({ data: { slotId, leadId, status: 'CONFIRMED' } });
+#### 2. Atomic Cancellation (`cancelBooking`)
+- Validates that visit is currently `CONFIRMED`.
+- Updates `SiteVisit` to `bookingStatus = CANCELLED` and sets `cancelledAt = now`, preserving the historical row for attribution audits.
+- Releases `VisitSlot` back to `AVAILABLE` only if `startsAt > now` (past slots remain `BOOKED`).
+- Deletes only `PENDING` reminder jobs for the visit, preventing unwanted dispatches without misusing `FAILED`.
 
-  // Queue ReminderJobs (24h + 2h)
-  await queueReminders(tx, visit.id, slot.startsAt);
-  return visit;
-});
-```
+#### 3. Attendance Recording (`recordAttendance`)
+- Supports visits with `(CONFIRMED + UNRECORDED)` (only after `startsAt <= now`) and `(COMPLETED + UNRECORDED)` (historical records).
+- Rejects `CANCELLED` visits or visits where attendance was already recorded.
+- Transitions `bookingStatus` to `COMPLETED`.
+- Sets `attendedAt` to `now` for `ATTENDED`; keeps it `null` for `NO_SHOW`.
+- Does not modify `VisitSlot` status.
 
-### Concurrency Tests (Milestone 3)
-1. `Promise.all([book(slotId), book(slotId)])` → exactly 1 succeeds, 1 gets `409 Conflict`
-2. Cancel → rebook same slot → succeeds
+#### 4. Concurrency & Integration Tests
+Covered in `tests/integration/booking-service.test.ts` (5 scenarios against isolated Neon branch):
+1. Successful booking, slot reservation, and reminder staging.
+2. Concurrent booking requests via `Promise.all` (1 succeeds, 1 gets `SlotUnavailableError`).
+3. Cancellation, future slot release, and deletion of pending reminder jobs.
+4. Rebooking a released slot with a second lead while preserving historical cancelled visit.
+5. Past-slot rejection and attendance recording for both confirmed visits and historical completed visits.
+- Independent Code Review: **APPROVED** (with low-severity observation that P2002 handling could more precisely inspect the constraint target).
 
 ---
 
@@ -400,6 +418,7 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 | D-013 | 2026-11-03 | DPDP Soft-delete, nullable unique phone, and transcript PII redaction | `Lead.phone` is declared nullable (`String?`) with `@unique`. In PostgreSQL standard SQL semantics, multiple `NULL` values do not violate a unique constraint. While standard lead ingestion requires a phone via Zod, setting `phone = NULL` upon DPDP erasure prevents unique collision across multiple anonymized leads. Furthermore, conversation transcripts (`ChatMessage.content`) and handoff summaries (`Handoff.summary`) must be scrubbed of buyer PII (regex pattern matching on phones/emails); this operational redaction logic is scheduled for implementation in Milestone 3 (`LeadService`) and Milestone 4 (`AIConciergeService`). This privacy-aware design assumption balances DPDP erasure with statutory record-retention requirements | Cascading hard delete — rejected because it violates audit integrity and statutory record-keeping |
 | D-014 | 2026-11-05 | Test database isolation via Neon copy-on-write branch & service dependency injection | Integration testing requires live PostgreSQL constraints, cascades, and partial indexes, but executing tests against the baseline development branch risks mutating seeded demo leads and audit logs. A dedicated Neon branch (`enquivo-test`, branch ID `br-nameless-waterfall-b3omykg9`, endpoint `ep-mute-butterfly-b3a54tpa`) provides copy-on-write isolation. A dedicated test client helper (`tests/helpers/testPrisma.ts`) validates `TEST_DATABASE_URL` with strict hostname allow-listing (rejecting `ep-frosty-tooth-b3446kf8` and asserting `ep-mute-butterfly-b3a54tpa`). Implemented in `LeadService` (`constructor(private db: PrismaClient = defaultPrisma)`) and approved for upcoming `BookingService` and `ReminderService`, service classes accept an optional database client via constructor dependency injection, allowing integration test suites to inject `testPrisma` without mutating `src/lib/prisma.ts` | Mocking Prisma in integration tests — rejected (fails to test actual PostgreSQL constraints, partial index race conditions, and transactions); Local Docker PostgreSQL — rejected (differs from remote Neon driver adapter and adds setup friction); Running against baseline branch — rejected (destroys seed data fidelity) |
 | D-015 | 2026-11-05 | Atomic conditional enrichment, PostgreSQL ON CONFLICT upsert for consent, and out-of-transaction P2002 recovery for lead ingestion | Concurrently ingesting leads introduces multiple race conditions: duplicate insertions for the same phone, clobbering existing profile fields during enrichment, and transaction aborts on consent creation. We resolved these by: (1) catching phone `P2002` outside aborted interactive transactions and merging against the winning committed lead in a fresh transaction; (2) using atomic conditional updates (`tx.lead.updateMany where email is null`) to prevent lost updates; (3) handling `ConsentRecord` via atomic `upsert` with `update: {}` so PostgreSQL executes `ON CONFLICT ("lead_id") DO NOTHING / no-op UPDATE`, avoiding transaction-aborting constraint errors while strictly preserving existing opt-out status (`optedOut: true`); and (4) hardening interactive transactions with `{ maxWait: 10000, timeout: 15000 }` to withstand remote WAN connection pool acquisition latencies | In-memory read-modify-write — rejected (lost updates under concurrency); Catching P2002 inside transaction for consent — rejected (aborts PostgreSQL transaction block); Automatic re-opt-in on re-ingestion — rejected (violates DPDP Act 2023 consent withdrawal) |
+| D-016 | 2026-11-05 | Atomic conditional slot reservation, relative reminder staging, and safe cancellation in BookingService | Managing appointments requires strict concurrency and temporal guards: (1) `bookVisit` executes an atomic conditional update (`UPDATE visit_slots SET status = 'BOOKED' WHERE id = $1 AND status = 'AVAILABLE' AND starts_at > NOW()`), throwing `SlotUnavailableError` if count !== 1; (2) PostgreSQL's partial unique index `one_active_booking_per_slot` (`WHERE booking_status = 'CONFIRMED'`) serves as an immutable database-level fallback; (3) pre-visit reminders (24h and 2h) are scheduled relative to `startsAt`, omitting past execution times; (4) `cancelBooking` preserves the historical `SiteVisit` row, releases the slot only if `startsAt > NOW()`, and deletes only `PENDING` reminder jobs to prevent erroneous delivery without misusing `FAILED`; (5) `recordAttendance` transitions `bookingStatus` to `COMPLETED`, records `attendedAt` only for `ATTENDED`, and supports both `CONFIRMED + UNRECORDED` (post-start) and `COMPLETED + UNRECORDED` visits without modifying slot status. Independent code review determination: APPROVED (noting a low-severity observation that P2002 handling could more precisely inspect the constraint target) | Application-level lock — rejected (race conditions under concurrency); In-transaction try-catch without conditional update — rejected (aborts transaction block on conflict); Marking cancelled reminders as FAILED — rejected (pollutes delivery failure metrics); Deleting cancelled SiteVisit rows — rejected (destroys audit and marketing attribution history) |
 
 ---
 
@@ -426,7 +445,7 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 |---|---|---|---|
 | M1 | Project Scaffold, Folder Structure, `.env.example`, `docs/TDD_DRAFT.md`, `deployment.md` | ✅ Complete | `1a57d2d` |
 | M2 | Prisma Schema (13 models + partial unique index), Neon Migration & Guarded Seed | ✅ Complete | `2e3bd3c` |
-| M3 | Core Backend Services (LeadService, BookingService, ReminderService) & Integration Tests | 🟡 In Progress | *(Phases 1 & 2 Complete)* |
+| M3 | Core Backend Services (LeadService, BookingService, ReminderService) & Integration Tests | 🟡 In Progress | *(Phases 1, 2 & 3 Complete)* |
 | M4 | AIConciergeService (EN/HI/GU, VERIFIED-only facts, Zod tool calling, handoff) | ⬜ Pending | — |
 | M5 | Buyer Mobile Concierge UI (language toggle, DPDP consent, slot picker, RERA disclaimer) | ⬜ Pending | — |
 | M6 | Sales Executive & Sales Head Portal (RBAC auth, Lead List, Handoff Queue, Fact Sheet Editor, Slot Manager) | ⬜ Pending | — |

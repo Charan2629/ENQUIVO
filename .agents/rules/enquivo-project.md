@@ -15,7 +15,11 @@ You are my Principal Engineering Mentor and Implementation Partner. We are build
    - `npm run build`
    - `npm test`
    - **Verification Rules:** Never fabricate test results. If a command is not configured yet, report `NOT CONFIGURED`. If a test is not applicable yet, report `NOT APPLICABLE`. If any check fails, fix it before requesting a commit. Report actual test counts and failures.
-3. **Update Live Docs (No Duplicate Appending):** Update the relevant sections of `docs/TDD_DRAFT.md` (maintaining a clean Decision Log and explicit `[ASSUMPTION]` tags) and `deployment.md`.
+3. **Update Live Docs (No Duplicate Appending):** Update all authoritative project documents:
+   - `docs/TDD_DRAFT.md`: maintain a clean Decision Log, system specifications, and explicit `[ASSUMPTION]` tags.
+   - `deployment.md`: update runbook steps, environment variables, and deployment instructions.
+   - `docs/PROJECT_STATE.md`: record completed work, pending tasks, exact verification outputs, blockers, and the next action.
+   - `docs/ENGINEERING_LOG.md`: log chronological milestones with problems solved, trade-offs, challenges, honest human-vs-AI attribution, and interview defenses.
 4. **Interview Defense & Learning Block (MANDATORY):** Before asking me to commit, output a section titled `### 🎓 Interview Defense & Deep-Dive` explaining:
    - **Code Walkthrough:** Exact file-by-file breakdown of what was written and how data flows.
    - **Trade-off Defense:** Why we chose this pattern over simpler alternatives.
@@ -193,6 +197,27 @@ Do not randomly change, replace or introduce alternative technologies without di
 8. Work milestone by milestone. Do not skip verification, documentation updates or Git checkpoints.
 9. Maintain a decision log with decision IDs, rationale and consequences.
 10. The repository, not conversational memory, is the ultimate source of truth.
+
+### Mandatory Engineering Documentation Protocol
+
+A strict, tripartite documentation architecture governs all milestone execution:
+- `docs/PROJECT_STATE.md`: Real-time operational state (progress status, test counts, blockers, next steps).
+- `docs/TDD_DRAFT.md`: Technical design, system models, formulas, compliance policies, Decision Log, and Assumptions Register.
+- `docs/ENGINEERING_LOG.md`: Chronological milestone journal capturing context, implementation details, challenges, honest attribution, and interview defenses.
+
+The following 12 rules must be strictly adhered to:
+1. **Milestone Journaling:** At the end of every meaningful milestone (and before committing), update `docs/ENGINEERING_LOG.md` using the standardized milestone structure.
+2. **State Tracking:** Update `docs/PROJECT_STATE.md` with the latest completed work, pending work, verification results, blockers, and the exact next action.
+3. **Architecture Evolution:** Update `docs/TDD_DRAFT.md` whenever an architectural decision, significant technical trade-off, or requirement changes.
+4. **Document Consistency:** Keep `docs/PROJECT_STATE.md`, `docs/TDD_DRAFT.md`, and `docs/ENGINEERING_LOG.md` fully synchronized and mutually consistent.
+5. **Factual Integrity:** Record actual implementation details, commands, test results, and commit hashes. Never fabricate or extrapolate results.
+6. **Temporal Honesty:** Never fabricate start times, end times, or duration spent. Only record timestamps when reliably known from system logs or version control; otherwise explicitly mark them as unrecorded.
+7. **Attribution Transparency:** Distinguish the developer's actual contributions (architecture decisions, scope constraints, reviews, corrections, and commit approvals) from AI-assisted code generation. Never exaggerate developer involvement.
+8. **Decision Rationale:** Record all significant technical decisions with their problem statement, chosen solution, rationale, alternatives considered, and consequences.
+9. **Technical Defensibility:** Include rigorous interview preparation and explanations, ensuring every statement can be defended with technical precision.
+10. **Appropriate Granularity:** Do not document every trivial terminal command. Group work into meaningful engineering milestones and coherent sub-phases.
+11. **Milestone-End Cadence:** Do not interrupt implementation flow to update documentation after every minor file edit. Perform documentation updates at milestone completion checkpoints before committing.
+12. **Preflight Requirement:** Before beginning any new milestone, consult `docs/PROJECT_STATE.md` and relevant `docs/ENGINEERING_LOG.md` entries to restore authoritative context.
 
 ### Learning-First Development Protocol
 

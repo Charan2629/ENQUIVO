@@ -1,17 +1,18 @@
 # ENQUIVO — Project State & Handover Document
 
 > **Authoritative Current State Document**
-> **Milestone 1:** Completed and pushed to version control.
-> **Milestone 2:** Schema implementation, live Neon PostgreSQL migration (`20261103165535_init`), live partial unique index verification, and guarded atomic seed execution (`npx prisma db seed`) COMPLETE & VERIFIED.
-> **Milestone 3:** Not started.
-> **Reference Time:** 2026-11-03T23:20:00+05:30 (November 3, 2026)
+> **Milestone 1:** Completed and pushed to version control (`1a57d2d`).
+> **Milestone 2:** Schema implementation, live Neon PostgreSQL migration (`20261103165535_init`), live partial unique index verification, and guarded atomic seed execution (`npx prisma db seed`) COMPLETE & PUSHED (`2e3bd3c`).
+> **Milestone 3:** In Progress — Phase 1 (Test Isolation & Harness) and Phase 2 (`LeadService` validation, implementation, and integration tests) COMPLETE. Phase 3 (`BookingService` implementation) next.
+> **Documentation Sync:** `docs/PROJECT_STATE.md`, `docs/TDD_DRAFT.md`, and `docs/ENGINEERING_LOG.md` are synchronized.
+> **Reference Time:** 2026-11-05T16:19:18+05:30 (November 5, 2026)
 
 ---
 
 ## 1. Project Overview & Architecture Status
 
 - **Architecture:** Modular Monolith on Next.js 16.4.4 App Router, TypeScript (strict), Tailwind CSS v4.
-- **ORM & Database:** Prisma 7.10.1 Stable with `@prisma/adapter-pg` driver adapter targeting hosted Neon PostgreSQL. All timestamps stored in UTC; formatted in `Asia/Kolkata` (IST) at application boundary.
+- **ORM & Database:** Prisma 7.10.1 Stable with `@prisma/adapter-pg` driver adapter targeting hosted Neon PostgreSQL (`neondb`). *Environment distinction:* Neon labels its initial default database branch as `[default] production` (branch ID `br-billowing-bread-b384dwk0`, endpoint `ep-frosty-tooth-b3446kf8`), which currently serves as our baseline development and demonstration database branch, distinct from an actual customer-facing live production environment. All timestamps stored in UTC; formatted in `Asia/Kolkata` (IST) at application boundary.
 - **Security:** Argon2id password hashing, HTTP-only session cookies, server-side RBAC (BUYER, SALES_EXEC, SALES_HEAD), server-only Gemini API key.
 - **Background Jobs:** Inngest Cloud for 24h & 2h pre-visit reminder jobs (persistent `ReminderJob` state machine, bounded retries `maxAttempts = 3`, idempotency key `${visitId}:${reminderType}`).
 
@@ -22,8 +23,8 @@
 | Milestone | Description | Status | Verification Summary |
 |---|---|---|---|
 | **M1** | Project Scaffold, Folder Structure, `.env.example`, `docs/TDD_DRAFT.md`, `deployment.md` | ✅ COMPLETE & PUSHED | `tsc --noEmit` PASS \| `lint` PASS \| `build` PASS (5.9s) |
-| **M2** | Database Architecture: Prisma 7, 13 Models, Partial Index, BigInt DTOs, Neon Migration & Guarded Seed | ✅ COMPLETE & VERIFIED | `prisma validate` PASS \| `prisma generate` PASS \| `tsc --noEmit` PASS \| `lint` PASS \| `build` PASS (1.8s) \| Neon Migration `20261103165535_init` APPLIED \| Live `one_active_booking_per_slot` VERIFIED in `pg_indexes` \| Guarded Seed COMMITTED & VERIFIED (4 Users, 2 Projects, 7 Facts, 3 Leads, 12 Slots, 2 Visits, 4 Reminders, ₹30L Spend, 0 Orphans) |
-| **M3** | Core Backend Services (`LeadService`, `BookingService`, `ReminderService`) & Integration Tests | ⬜ NOT STARTED | Scheduled next |
+| **M2** | Database Architecture: Prisma 7, 13 Models, Partial Index, BigInt DTOs, Neon Migration & Guarded Seed | ✅ COMPLETE & PUSHED (`2e3bd3c`) | `prisma validate` PASS \| `prisma generate` PASS \| `tsc --noEmit` PASS \| `lint` PASS \| `build` PASS (1.8s) \| Neon Migration `20261103165535_init` APPLIED \| Live `one_active_booking_per_slot` VERIFIED in `pg_indexes` \| Guarded Seed COMMITTED & VERIFIED (4 Users, 2 Projects, 7 Facts, 3 Leads, 12 Slots, 2 Visits, 4 Reminders, ₹30L Spend, 0 Orphans) |
+| **M3** | Core Backend Services (`LeadService`, `BookingService`, `ReminderService`) & Integration Tests | 🟡 IN PROGRESS (Phases 1 & 2 Complete) | `vitest` unit tests PASS (38/38) \| `vitest` integration tests PASS (9/9) \| Isolated test endpoint `ep-mute-butterfly-b3a54tpa` verified \| `tsc --noEmit` PASS \| `lint` PASS \| Next: Phase 3 `BookingService` |
 | **M4** | `AIConciergeService` (EN/HI/GU, VERIFIED-only Fact Sheet retrieval, Zod tool calling, Handoff) | ⬜ NOT STARTED | After M3 |
 | **M5** | Buyer Mobile Concierge UI (minimalist, language toggle, DPDP consent, slot picker, RERA) | ⬜ NOT STARTED | After M4 |
 | **M6** | Sales Executive & Sales Head Portal (RBAC auth, Lead List, Handoff Queue, Fact Sheet Editor, Slot Manager) | ⬜ NOT STARTED | After M5 |
@@ -61,14 +62,16 @@
 - **D-007:** UTC storage in DB, IST display via `date-fns-tz`.
 - **D-008:** Gemini API key strictly server-side.
 - **D-009:** Prisma 7.10.1 Stable with `@prisma/adapter-pg` over Prisma 8 RC.
-- **D-010:** `amountPaise BigInt` with safe DTO serialization (`src/lib/serializers.ts`). Distinguishes JS `Number.MAX_SAFE_INTEGER` (~₹90.07 lakh crore) from PostgreSQL 32-bit `INTEGER` overflow (~₹2.14 crore).
+- **D-010:** Monetary storage via integer paise with PostgreSQL `BIGINT` + JavaScript native `bigint`, eliminating IEEE-754 binary float rounding errors without `Decimal` object-wrapping overhead. Safe DTO serialization (`src/lib/serializers.ts`) handles native `JSON.stringify` BigInt serialization constraints at API boundaries.
 - **D-011:** `FactSheet` dual-flag retrieval (`status = VERIFIED AND isActive = true`).
 - **D-012:** Separation of `BookingStatus` from `AttendanceOutcome`.
 - **D-013:** DPDP soft-delete with nullable unique `Lead.phone`, and chat transcript/handoff PII redaction (scheduled for M3/M4).
+- **D-014:** Test Database Isolation via Neon Copy-on-Write Branch (`enquivo-test`, endpoint `ep-mute-butterfly-b3a54tpa`) and Service Dependency Injection (`constructor(private db: PrismaClient = defaultPrisma)` implemented in `LeadService`, approved pattern for upcoming `BookingService` and `ReminderService`). Ensures zero test mutation on baseline seed data.
+- **D-015:** Lead Ingestion Concurrency, First-Touch Attribution, and DPDP Consent Preservation Strategy. Deduplicates leads by normalized E.164 phone; retains immutable first-touch attribution (`Lead.source`); enriches missing fields non-destructively via atomic conditional SQL updates (`updateMany where email is null`); catches phone `P2002` outside aborted transactions to merge against winning records; retries `leadCode` collisions independently; and handles `ConsentRecord` via atomic `upsert` with `update: {}` to prevent PostgreSQL transaction aborts while preserving prior opt-out status (`optedOut: true`).
 
 ---
 
-## 5. Verification Results (Milestone 2)
+## 5. Verification Results (Milestone 2 & Milestone 3 Phase 1)
 
 | Check | Command | Result |
 |---|---|---|
@@ -76,7 +79,7 @@
 | Prisma Generate | `npx prisma generate` | ✅ PASS (`Generated Prisma Client v7.10.1`) |
 | TypeScript | `npx tsc --noEmit` | ✅ PASS (0 errors) |
 | ESLint | `npm run lint` | ✅ PASS (0 errors, 0 warnings) |
-| Production Build | `npm run build` | ✅ PASS (Next.js 16.4.4 Turbopack, 4/4 static pages, compiled in 4.0s) |
+| Production Build | `npm run build` | ✅ PASS (Next.js 16.4.4 Turbopack, 4/4 static pages, compiled in 3.1s) |
 | Database Migration | `npx prisma migrate dev --name init` | ✅ APPLIED (`20261103165535_init` applied to Neon `neondb`) |
 | Live Partial Index Check | Query `pg_indexes` | ✅ VERIFIED (`CREATE UNIQUE INDEX one_active_booking_per_slot ON public.site_visits USING btree (slot_id) WHERE (booking_status = 'CONFIRMED'::"BookingStatus")`) |
 | Live Tables Check | Query `information_schema.tables` | ✅ VERIFIED (All 13 domain tables + `_prisma_migrations` present) |
@@ -84,17 +87,28 @@
 | Live Foreign Keys Check | Query `pg_constraint` | ✅ VERIFIED (Foreign keys on `site_visits` with `ON DELETE RESTRICT`) |
 | Database Seed | `npx prisma db seed` | ✅ COMMITTED & VERIFIED (Atomic transaction, 4 users, 2 projects, 7 facts, 3 leads, 12 slots, 2 visits, 4 reminders, 4 spends) |
 | Live Seed Catalog Check | SQL Left-Join Queries | ✅ VERIFIED (0 orphans, 0 pending reminders, exact ₹30L spend, draft fact isolated) |
-| Automated Tests | `npm test` | ⚠️ NOT CONFIGURED (Vitest test harness scheduled in Milestone 3) |
+| Automated Unit Tests | `npm test` | ✅ PASS (`38/38 tests passed across 2 files: tests/unit/serializers.test.ts [18] and tests/unit/lead-validation.test.ts [20]`) |
+| Test Coverage | `npm run test:coverage` | ✅ PASS (100% Stmts, Branch, Funcs, Lines on `src/lib/serializers.ts`; 100% Stmts/Lines, 97.9% Branch on `src/lib/validations/lead.ts`) |
+| Integration Tests | `npm run test:integration` | ✅ PASS (`9/9 tests passed across 2 files: tests/integration/db-connection.test.ts [4] and tests/integration/lead-service.test.ts [5]` against `ep-mute-butterfly-b3a54tpa`) |
 
 ---
 
 ## 6. Known Issues & Pending Execution Items
 
-1. **Milestone 2 Completed:** All 3 phases of Milestone 2 (Configuration, Initial Migration with Partial Index, Guarded Atomic Seed) have been executed and verified in Neon PostgreSQL.
-2. **Milestone 3 Not Started:** Development of `LeadService`, `BookingService`, `ReminderService`, and Vitest integration test suite is scheduled next.
+1. **Milestones 1 & 2 Completed:** Scaffolding, architecture documentation, 13-model schema, Neon hosted migration, partial unique index, safe BigInt serializers, and guarded atomic seed script completed, verified, and committed (`2e3bd3c`). Seeded data resides on Neon's default branch (`neondb`), which functions as our shared development/demonstration baseline rather than an active customer-facing production deployment.
+2. **Milestone 3 Phase 1 Complete:**
+   - Step 1 completed: `zod` (`^4.6.7`), `inngest` (`^4.26.2`), `vitest` (`^5.1.0`), `@vitest/coverage-v8` (`^5.1.0`), `@types/node` (`^24.19.2`) installed.
+   - Step 2 completed: Scoped unit test configuration (`vitest.config.mts`) and 18 unit tests in `tests/unit/serializers.test.ts` passing with 100% coverage strictly on `src/lib/serializers.ts`.
+   - Step 3 completed: Test database isolation configured via `tests/helpers/testPrisma.ts` targeting isolated Neon branch (`enquivo-test`, branch ID `br-nameless-waterfall-b3omykg9`, endpoint `ep-mute-butterfly-b3a54tpa`), separate `vitest.integration.config.mts`, `test:integration` script, and 4/4 read-only smoke tests in `tests/integration/db-connection.test.ts` passing.
+3. **Milestone 3 Phase 2 Complete (`LeadService` Implementation & Verification):**
+   - Step 1 completed: `src/lib/validations/lead.ts` with strict phone normalization (regex allow-list `/^\+?[\d\s\-()]+$/`, E.164 formatting), email normalization, `generateLeadCode()` (`LD-` + base36 timestamp + 8-char random hex), and Zod validation schemas (`ingestLeadSchema` requiring `affirmed: true` on DPDP consent). Authored 20 unit tests in `tests/unit/lead-validation.test.ts` (100% statements/lines, 97.9% branch coverage).
+   - Step 2 completed: `src/services/lead/lead.service.ts` implementing `LeadService` with constructor dependency injection (`constructor(private db: PrismaClient = defaultPrisma)`), atomic interactive transactions, out-of-transaction `P2002` error discrimination (recovering from concurrent phone insertion races by querying the winning lead outside the aborted transaction), separate bounded retry loop (3x) for `leadCode` collisions, atomic non-destructive conditional enrichment (`updateMany` where `email/projectId/configuration` is null), atomic DPDP consent handling via `upsert` with `update: {}` to prevent transaction abort while strictly preserving existing opt-out status, and `{ maxWait: 10000, timeout: 15000 }` transaction options for remote cloud latency resilience.
+   - Step 3 completed: Authored 5 integration tests in `tests/integration/lead-service.test.ts` validating new lead creation with audit touchpoint, duplicate ingestion retaining immutable first-touch attribution, non-destructive conditional enrichment, `Promise.all` concurrent race handling, and DPDP consent creation + opt-out preservation, with scoped `createdLeadIds` FK-respecting teardown and clean client disconnect.
+   - Design Limitation Identified: Append-only ledger for `LeadSourceEvent`. Idempotency across duplicate webhook deliveries without external payload event IDs is an explicit MVP design trade-off.
+4. **Milestone 3 Phase 3 Next:** `BookingService` implementation (atomic slot locking `UPDATE "VisitSlot" SET status = 'BOOKED' WHERE id = $1 AND status = 'AVAILABLE'`, cancellation rebooking, temporal validation `startsAt > NOW()`, and concurrency integration tests).
 
 ---
 
 ## 7. Exact Next Action
 
-Review Milestone 2 completion report and reply `"Next"` to unlock **Milestone 3: Core Backend Services (`LeadService`, `BookingService`, `ReminderService`) & Integration Tests**.
+Proceed to Milestone 3 Phase 3 (`BookingService` design and implementation).

@@ -107,7 +107,8 @@ ENQUIVO is a **modular monolith** built on Next.js 16 App Router. Business logic
 | AI | Google Gemini API (`@google/genai`) | (Milestone 4) |
 | Background Jobs | Inngest | (Milestone 3) |
 | Date Handling | date-fns (4.4.0) + date-fns-tz (3.2.0) | 4.x / 3.x |
-| Unit Tests | Vitest + React Testing Library | (Milestone 3) |
+| Unit Tests | Vitest (scoped via `vitest.config.mts`) | 5.1.0 (Milestone 3 Phase 1) |
+| Integration Tests | Vitest + Isolated Neon Branch (`vitest.integration.config.mts`) | 5.1.0 (Milestone 3 Phase 1) |
 | E2E Tests | Playwright | (Milestone 7) |
 | Deployment | Vercel | (Milestone 8) |
 | CI | GitHub Actions | (Milestone 8) |
@@ -117,7 +118,7 @@ ENQUIVO is a **modular monolith** built on Next.js 16 App Router. Business logic
 
 ## 4. Database Schema — 13 Models
 
-All 13 models are defined in `prisma/schema.prisma` targeting PostgreSQL (hosted on Neon) using Prisma 7.10.1 with `previewFeatures = ["partialIndexes"]`.
+All 13 models are defined in `prisma/schema.prisma` targeting PostgreSQL (hosted on Neon) using Prisma 7.10.1 with `previewFeatures = ["partialIndexes"]`. *(Note: Neon assigns the label `[default] production` to the initial database branch, which currently serves as our baseline development and demonstration environment, distinct from a customer-facing live production deployment).*
 
 | # | Model | Key Fields & Constraints | Audit & Delete Policy |
 |---|---|---|---|
@@ -236,7 +237,50 @@ CREATE UNIQUE INDEX "one_active_booking_per_slot"
 
 ---
 
-## 9. Booking Lifecycle & Concurrency Control
+## 9. Lead Ingestion & Attribution Engine (`LeadService`)
+
+### Architecture & Service Design
+`LeadService` (`src/services/lead/lead.service.ts`) governs lead intake, deduplication, first-touch attribution, and DPDP digital consent. It adopts constructor dependency injection (`constructor(private db: PrismaClient = defaultPrisma)`), enabling test harnesses to inject isolated test clients (`testPrisma`) targeting ephemeral Neon database branches without mutating the production application singleton.
+
+### Ingestion Flow & Guarantees
+1. **Input Validation & Strict Normalization:**
+   - Phone numbers are validated using a strict regex allow-list (`/^\+?[\d\s\-()]+$/`) and normalized to E.164 (e.g. `98765 43210` -> `+919876543210`). Alphabetic characters or misplaced `+` signs are rejected with informative errors.
+   - Email addresses are trimmed and converted to lowercase.
+   - Lead codes are generated using the pattern `LD-[A-Z0-9]{5}-[A-Z0-9]{8}` (`LD-` + base-36 timestamp + 8-char random hex from `crypto.randomUUID()`).
+2. **First-Touch Attribution Immutability:**
+   - When an incoming phone matches an existing active lead (`deletedAt: null`), the original `Lead.source` is **never updated**.
+   - The new interaction channel is appended to `LeadSourceEvent` with the campaign identifier and timestamp, preserving multi-touch attribution history.
+3. **Non-Destructive Conditional Field Enrichment:**
+   - When an existing lead submits additional profile fields (email, configuration preference, project interest), updates are executed conditionally via PostgreSQL atomic queries:
+     ```typescript
+     await tx.lead.updateMany({
+       where: { id: existing.id, email: null, deletedAt: null },
+       data: { email },
+     });
+     ```
+   - This prevents lost updates or clobbering existing non-null data under concurrent ingestion.
+4. **PostgreSQL Concurrency & Error Discrimination:**
+   - **Phone Uniqueness Race (P2002):** If two concurrent requests attempt to insert the same new phone number simultaneously, PostgreSQL raises unique violation `23505` (`P2002`). Because PostgreSQL transaction semantics transition the interactive transaction block into an `ABORTED` state, the error is caught **outside** the dead transaction. The winning committed lead is queried via `this.db.lead.findFirst`, and a fresh transaction is opened to merge and append the audit event.
+   - **Lead Code Collision (P2002):** Uniqueness collisions on `lead_code` are caught independently and trigger a bounded retry loop (up to 3 attempts) generating a fresh code.
+   - **WAN Latency Resilience:** Interactive transactions configure `{ maxWait: 10000, timeout: 15000 }` to avoid premature connection pool acquisition timeouts (`P2028`) over remote cloud network connections.
+5. **DPDP Act 2023 Digital Consent & Opt-Out Invariance:**
+   - Digital consent requires explicit affirmation (`affirmed: true`).
+   - Consent records are created using atomic `upsert` with `update: {}`:
+     ```typescript
+     await tx.consentRecord.upsert({
+       where: { leadId: existing.id },
+       create: { leadId: existing.id, consentText, consentedAt: new Date(), optedOut: false },
+       update: {},
+     });
+     ```
+   - Using PostgreSQL `ON CONFLICT ("lead_id")` prevents transaction abort errors. Crucially, `update: {}` leaves existing records untouched: if a buyer has previously exercised their DPDP right to opt out (`optedOut: true`), routine re-ingestion **never silently re-opts them in**.
+
+### Explicit Design Limitations & Assumptions Register Alignment
+- **Append-Only Event Ledger (Webhook Idempotency Limitation):** `LeadSourceEvent` does not currently enforce a composite unique constraint or store an external provider event ID (e.g. `webhookEventId`). Repeated webhook retries from the same ad campaign will append multiple audit rows. This is an explicit MVP design decision to prevent data loss in webhook ingestion pipelines pending formal dead-letter queue and external delivery ID specifications in Milestone 6/7.
+
+---
+
+## 10. Booking Lifecycle & Concurrency Control
 
 ```
 VisitSlot.status:   AVAILABLE ──► BOOKED ──► AVAILABLE (on cancellation)
@@ -273,7 +317,7 @@ await prisma.$transaction(async (tx) => {
 
 ---
 
-## 10. Scheduled Reminder Processing
+## 11. Scheduled Reminder Processing
 
 | Field | Value |
 |---|---|
@@ -287,7 +331,7 @@ await prisma.$transaction(async (tx) => {
 
 ---
 
-## 11. AI Concierge Design
+## 12. AI Concierge Design
 
 ### Languages
 Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer preference at conversation start.
@@ -312,7 +356,7 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 
 ---
 
-## 12. Analytics & Metric Definitions
+## 13. Analytics & Metric Definitions
 
 > [ASSUMPTION — Illustrative Demo Allocation] Source spend figures are for demonstration only.
 
@@ -337,7 +381,7 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 
 ---
 
-## 13. Decision Log
+## 14. Decision Log
 
 | # | Date | Decision | Rationale | Alternatives Considered |
 |---|---|---|---|---|
@@ -350,14 +394,16 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 | D-007 | 2026-11-03 | UTC storage, IST display via `date-fns-tz` | UTC in DB is universal best practice; IST conversion at display layer avoids timezone bugs | Storing IST — rejected (DST changes, international complications) |
 | D-008 | 2026-11-03 | Gemini API key strictly server-side only | Security requirement; keys in `NEXT_PUBLIC_*` would be exposed in browser bundle | Client-side key — rejected (critical security risk) |
 | D-009 | 2026-11-03 | Prisma 7.10.1 stable with `@prisma/adapter-pg` over Prisma 8 RC | Prisma 8 is an unstable RC (8.0.0-rc.29) with breaking package splits and experimental TypeScript migrations; Prisma 7.10.1 is battle-tested, supports Node 24, and provides native `previewFeatures = ["partialIndexes"]` | Prisma 8 RC — rejected due to production stability risk |
-| D-010 | 2026-11-03 | `amountPaise BigInt` with safe DTO serialization | JavaScript `Number.MAX_SAFE_INTEGER` = 2^53 - 1 = 9,007,199,254,740,991, which in paise represents ~₹90.07 trillion (~₹90.07 lakh crore INR). The 32-bit signed integer limitation belongs strictly to PostgreSQL `INTEGER` (Prisma `Int`), which caps at 2^31 - 1 = 2,147,483,647 paise (~₹2.14 crore), easily exceeded by real estate marketing budgets. PostgreSQL `BIGINT` (Prisma `BigInt`) provides 64-bit storage up to ~9 x 10^18 paise, eliminating database overflow. Safe DTO serialization (`src/lib/serializers.ts`) converts BigInt values to numeric strings/numbers to prevent runtime `TypeError` in JSON API responses | PostgreSQL INTEGER / Prisma Int — rejected due to 32-bit database column capacity overflow; Float — rejected due to IEEE-754 decimal drift |
+| D-010 | 2026-11-03 | `amountPaise BigInt` with safe DTO serialization | Monetary values are stored in integer paise using PostgreSQL `BIGINT` mapped to JavaScript native `bigint`. This avoids IEEE-754 binary floating-point representation drift (`Float`), where base-10 fractions cannot be represented exactly in binary floating-point arithmetic. While arbitrary-precision `Decimal` is mathematically exact, storing amounts as integer paise on native integer types (`BIGINT`) avoids third-party decimal-library object-wrapping and string-parsing overhead in the JavaScript runtime while keeping basic arithmetic native. Furthermore, while standard 32-bit PostgreSQL `INTEGER` (capped at ~₹2.14 crore in paise) would risk column capacity overflow on cumulative marketing budgets, 64-bit `BIGINT` comfortably accommodates up to ~9 x 10^18 paise (~₹90,000 trillion). Because ECMAScript specification prevents `JSON.stringify` from serializing native `bigint` primitives (throwing `TypeError: Do not know how to serialize a BigInt`), safe DTO serializers (`src/lib/serializers.ts`) convert BigInt paise to numbers or formatted currency strings at API boundaries | `Float` — rejected due to IEEE-754 binary floating-point rounding errors; `Decimal` — rejected not for inaccuracy (it is exact), but to avoid object-wrapping and decimal library overhead when integer paise natively provides exactness; PostgreSQL 32-bit `INTEGER` / Prisma `Int` — rejected due to 2^31-1 column capacity overflow on paise |
 | D-011 | 2026-11-03 | `FactSheet` dual-flag (`status = VERIFIED AND isActive = true`) | AI Concierge grounding strictly filters for active, verified facts. Deactivating outdated facts without mutating approval history preserves governance records | Single status flag — rejected because soft-deactivation would require demoting to UNVERIFIED |
 | D-012 | 2026-11-03 | Decoupling booking lifecycle (`BookingStatus`) from attendance outcome (`AttendanceOutcome`) | The assessment brief confirms Hardik Patel booked on Nov 1, 2026, but does not confirm attendance. Separating status preserves data fidelity without falsifying attendance records | Combined status — rejected because it conflates scheduling with physical presence |
 | D-013 | 2026-11-03 | DPDP Soft-delete, nullable unique phone, and transcript PII redaction | `Lead.phone` is declared nullable (`String?`) with `@unique`. In PostgreSQL standard SQL semantics, multiple `NULL` values do not violate a unique constraint. While standard lead ingestion requires a phone via Zod, setting `phone = NULL` upon DPDP erasure prevents unique collision across multiple anonymized leads. Furthermore, conversation transcripts (`ChatMessage.content`) and handoff summaries (`Handoff.summary`) must be scrubbed of buyer PII (regex pattern matching on phones/emails); this operational redaction logic is scheduled for implementation in Milestone 3 (`LeadService`) and Milestone 4 (`AIConciergeService`). This privacy-aware design assumption balances DPDP erasure with statutory record-retention requirements | Cascading hard delete — rejected because it violates audit integrity and statutory record-keeping |
+| D-014 | 2026-11-05 | Test database isolation via Neon copy-on-write branch & service dependency injection | Integration testing requires live PostgreSQL constraints, cascades, and partial indexes, but executing tests against the baseline development branch risks mutating seeded demo leads and audit logs. A dedicated Neon branch (`enquivo-test`, branch ID `br-nameless-waterfall-b3omykg9`, endpoint `ep-mute-butterfly-b3a54tpa`) provides copy-on-write isolation. A dedicated test client helper (`tests/helpers/testPrisma.ts`) validates `TEST_DATABASE_URL` with strict hostname allow-listing (rejecting `ep-frosty-tooth-b3446kf8` and asserting `ep-mute-butterfly-b3a54tpa`). Implemented in `LeadService` (`constructor(private db: PrismaClient = defaultPrisma)`) and approved for upcoming `BookingService` and `ReminderService`, service classes accept an optional database client via constructor dependency injection, allowing integration test suites to inject `testPrisma` without mutating `src/lib/prisma.ts` | Mocking Prisma in integration tests — rejected (fails to test actual PostgreSQL constraints, partial index race conditions, and transactions); Local Docker PostgreSQL — rejected (differs from remote Neon driver adapter and adds setup friction); Running against baseline branch — rejected (destroys seed data fidelity) |
+| D-015 | 2026-11-05 | Atomic conditional enrichment, PostgreSQL ON CONFLICT upsert for consent, and out-of-transaction P2002 recovery for lead ingestion | Concurrently ingesting leads introduces multiple race conditions: duplicate insertions for the same phone, clobbering existing profile fields during enrichment, and transaction aborts on consent creation. We resolved these by: (1) catching phone `P2002` outside aborted interactive transactions and merging against the winning committed lead in a fresh transaction; (2) using atomic conditional updates (`tx.lead.updateMany where email is null`) to prevent lost updates; (3) handling `ConsentRecord` via atomic `upsert` with `update: {}` so PostgreSQL executes `ON CONFLICT ("lead_id") DO NOTHING / no-op UPDATE`, avoiding transaction-aborting constraint errors while strictly preserving existing opt-out status (`optedOut: true`); and (4) hardening interactive transactions with `{ maxWait: 10000, timeout: 15000 }` to withstand remote WAN connection pool acquisition latencies | In-memory read-modify-write — rejected (lost updates under concurrency); Catching P2002 inside transaction for consent — rejected (aborts PostgreSQL transaction block); Automatic re-opt-in on re-ingestion — rejected (violates DPDP Act 2023 consent withdrawal) |
 
 ---
 
-## 14. Assumptions Register
+## 15. Assumptions Register
 
 | ID | Assumption | Label | Impact if Wrong |
 |---|---|---|---|
@@ -374,19 +420,13 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 
 ---
 
-## 15. Milestone Completion Tracker
+## 16. Milestone Completion Tracker
 
 | Milestone | Description | Status | Commit |
 |---|---|---|---|
-| M1 | Project Scaffold, Folder Structure, `.env.example`, `docs/TDD_DRAFT.md`, `deployment.md` | ✅ Complete | *(pending)* |
-| M2 | Prisma Schema (13 models + partial unique index) & Date-Aware Seed Script | ✅ Complete | *(pending)* |
-| M3 | Core Backend Services (LeadService, BookingService, ReminderService) & Integration Tests | ⬜ Pending | — |
-| M4 | AIConciergeService (EN/HI/GU, VERIFIED-only facts, Zod tool calling, handoff) | ⬜ Pending | — |
-| M5 | Buyer Mobile Concierge UI (language toggle, DPDP consent, slot picker, RERA disclaimer) | ⬜ Pending | — |
-| M6 | Sales Executive & Sales Head Portal (RBAC auth, Lead List, Handoff Queue, Fact Sheet Editor, Slot Manager) | ⬜ Pending | — |
-| M7 | Source Attribution & ROI Dashboard + Complete Vitest Suite | ⬜ Pending | — |
-| M8 | Final Submission Packaging (TDD.pdf + deployment.md zip, <25MB, zero secrets) | ⬜ Pending | — |
-| M3 | Core Backend Services (LeadService, BookingService, ReminderService) & Integration Tests | ⬜ Pending | — |
+| M1 | Project Scaffold, Folder Structure, `.env.example`, `docs/TDD_DRAFT.md`, `deployment.md` | ✅ Complete | `1a57d2d` |
+| M2 | Prisma Schema (13 models + partial unique index), Neon Migration & Guarded Seed | ✅ Complete | `2e3bd3c` |
+| M3 | Core Backend Services (LeadService, BookingService, ReminderService) & Integration Tests | 🟡 In Progress | *(Phases 1 & 2 Complete)* |
 | M4 | AIConciergeService (EN/HI/GU, VERIFIED-only facts, Zod tool calling, handoff) | ⬜ Pending | — |
 | M5 | Buyer Mobile Concierge UI (language toggle, DPDP consent, slot picker, RERA disclaimer) | ⬜ Pending | — |
 | M6 | Sales Executive & Sales Head Portal (RBAC auth, Lead List, Handoff Queue, Fact Sheet Editor, Slot Manager) | ⬜ Pending | — |

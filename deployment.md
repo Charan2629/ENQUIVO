@@ -167,36 +167,44 @@ npm run lint
 
 ## 6. Running Inngest (Background Jobs) Locally
 
-Inngest requires its dev server to be running alongside Next.js in local development.
+Inngest handles the 24-hour and 2-hour pre-visit reminder jobs via background cron and event processing. The `/api/inngest` Route Handler (`src/app/api/inngest/route.ts`) and functions (`src/services/reminder/reminder.inngest.ts`) are fully implemented.
 
 ```bash
-# Install Inngest CLI globally (once)
-npm install -g inngest-cli
-
-# In a separate terminal, start the Inngest dev server
+# In a separate terminal, start the Inngest dev server pointing to the Next.js endpoint:
 npx inngest-cli@latest dev -u http://localhost:3000/api/inngest
 
-# The Inngest dev UI will be available at: http://localhost:8288
+# The Inngest local development UI will be available at: http://localhost:8288
 ```
 
-> **Note:** The `/api/inngest` Route Handler is created in Milestone 3. The Inngest dev server will show a connection error until then — this is expected.
+You can trigger a reminder sweep manually from the Inngest Dev Server dashboard by sending the event:
+```json
+{
+  "name": "enquivo/reminders.process"
+}
+```
 
 ---
 
 ## 7. Running Tests
 
+The test suite is partitioned into unit tests and isolated database integration tests:
+
 ```bash
-# Unit + integration tests (Vitest) — configured in Milestone 3
+# 1. Run scoped unit tests (serializers and Zod validation rules)
 npm test
 
-# Watch mode
+# 2. Run isolated PostgreSQL integration tests (against isolated Neon test branch)
+npm run test:integration
+
+# 3. Unit test watch mode
 npm run test:watch
 
-# Coverage report
+# 4. Coverage report
 npm run test:coverage
 
-# End-to-end tests (Playwright) — configured in Milestone 7
+# 5. End-to-end tests (Playwright) — configured in Milestone 7
 npm run test:e2e
+```
 
 # E2E UI mode (interactive)
 npm run test:e2e:ui

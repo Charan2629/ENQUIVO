@@ -414,6 +414,81 @@ Appointment scheduling in residential real estate requires strict concurrency gu
 
 ---
 
+### Milestone 3 — Phase 4: ReminderService Background Processor & Inngest Integration
+
+- **Date:** 2026-11-05
+- **Status:** Complete (Milestone 3 Core Backend Services Fully Complete)
+
+#### 1. Context & Objectives
+In real estate lead-response pipelines, site-visit drop-off and no-shows severely impair marketing ROI. ENQUIVO addresses this by scheduling automated 24-hour and 2-hour pre-visit notifications. Phase 4 completed the backend service layer by implementing `ReminderService`: an idempotent, concurrency-safe background job processor wired to Inngest Cloud, backed by persistent `ReminderJob` records in Neon PostgreSQL, bounded by a 3-attempt retry policy, and strictly adhering to DPDP Act 2023 digital consent opt-out rules.
+
+#### 2. Architecture & Design Decisions
+- **Inngest Cloud as Durable Execution Orchestrator:** Adopted Inngest for background cron (`*/5 * * * *`) and on-demand execution (`enquivo/reminders.process`), eliminating the operational complexity and cost of maintaining dedicated Redis/BullMQ or RabbitMQ brokers.
+- **Database-Backed Persistent State Machine:** `ReminderJob` tracks job status across `PENDING -> PROCESSING -> SENT / FAILED`. Every state transition is persisted in PostgreSQL with audit notes and attempt counts.
+- **Atomic Conditional Claiming:** To prevent double-dispatch under horizontal scaling (multiple concurrent Next.js serverless instances or simultaneous Inngest executions), workers execute an atomic conditional SQL update: `UPDATE reminder_jobs SET status = 'PROCESSING', attempts = attempts + 1, last_attempt_at = NOW() WHERE id = $1 AND status = 'PENDING'`. Only the winning worker receives `count === 1`; any concurrent worker receives `count === 0` and safely exits without sending a message.
+- **Booking Status Re-Verification:** Before dispatching, the worker rechecks `SiteVisit.bookingStatus`. If the visit was cancelled, the orphaned reminder job is deleted immediately, avoiding false dispatches while keeping `FAILED` semantically pure.
+- **DPDP Act 2023 Digital Consent Suppression:** Re-evaluates `lead.consentRecord`. If the buyer has opted out (`optedOut: true`) or lacks active consent, dispatch is suppressed and the unsendable job is deleted from the operational queue (`SKIPPED_OPTED_OUT` or `SKIPPED_NO_CONSENT`). This strictly preserves `status: FAILED` for genuine exhausted carrier delivery failures without polluting error metrics.
+- **Stale PROCESSING Worker Crash Recovery:** At the start of `processDueReminders()`, identifies jobs stuck in `PROCESSING` with `lastAttemptAt <= NOW() - 10 minutes`. Reclaims jobs with attempts < 3 back to `PENDING` for eventual retry, and marks jobs with attempts >= 3 as `FAILED` with an explicit worker-timeout reason.
+- **Five-Minute Retry Backoff:** When a delivery fails and attempts remain (`attempts < 3`), the job reverts to `PENDING` with `scheduledFor = NOW() + 5 minutes`, ensuring subsequent cron or event sweeps do not prematurely exhaust attempts against transient outages.
+- **Delivery Semantics & Crash Boundary:** Guarantees **at-least-once delivery with atomic conditional claiming** to prevent concurrent execution races. Explicitly recognizes the distributed systems boundary: if a worker process crashes after an external provider dispatch but before committing `status: SENT`, stale recovery will eventually re-dispatch the reminder, resulting in duplicate delivery unless the downstream carrier deduplicates via `idempotencyKey`.
+- **Mock Notification Provider with IST Formatting:** Formats appointment times in `Asia/Kolkata` (IST, UTC+5:30) via `date-fns-tz`, includes recipient name, venue, and `idempotencyKey`, and logs a structured simulation note. No external carrier network calls are made.
+- **Constructor Dependency Injection:** `ReminderService` accepts an optional `PrismaClient` and `MockNotificationProvider`, enabling tests to inject `testPrisma` and simulate transient network timeouts deterministically.
+
+#### 3. Key Implementation Details
+- `src/lib/inngest.ts`: Initializes the `enquivo` Inngest client instance.
+- `src/services/reminder/mock-notification.provider.ts`: Implements `defaultMockNotificationProvider`, formatting appointments in IST, accepting stable `idempotencyKey`, and returning deterministic `simulationNote` strings.
+- `src/services/reminder/reminder.service.ts`: Implements `processDueReminders(batchSize)` and `processReminderJob(jobId)`. Features: 10-minute stale PROCESSING job reclamation, atomic conditional claim (`status = PENDING -> PROCESSING`), parent visit confirmation verification, DPDP consent/opt-out suppression without marking FAILED, and bounded retries (`maxAttempts = 3`) with 5-minute backoff.
+- `src/services/reminder/reminder.inngest.ts`: Inngest v4 function `processDueRemindersFunction` with dual triggers (cron `*/5 * * * *` and event `enquivo/reminders.process`).
+- `src/app/api/inngest/route.ts`: Next.js App Router handler exporting `GET, POST, PUT` via `serve({ client: inngest, functions: [...] })`.
+- `tests/integration/reminder-service.test.ts`: 8 integration tests against isolated Neon test branch (`enquivo-test`).
+
+#### 4. Files Created or Modified
+- `src/lib/inngest.ts` — Inngest client initialization.
+- `src/services/reminder/mock-notification.provider.ts` — Mock SMS/WhatsApp notification provider with `idempotencyKey`.
+- `src/services/reminder/reminder.service.ts` — Core `ReminderService` background processor with stale recovery, DPDP suppression, and 5m retry backoff.
+- `src/services/reminder/reminder.inngest.ts` — Inngest scheduled function definition.
+- `src/app/api/inngest/route.ts` — Next.js App Router Inngest route handler.
+- `tests/integration/reminder-service.test.ts` — 8 integration tests against isolated Neon test branch.
+- `deployment.md` — Updated Inngest runbook and test execution commands.
+- `docs/PROJECT_STATE.md` — Synchronized project state, verification table (22 integration tests), and Decision D-017.
+- `docs/TDD_DRAFT.md` — Updated Section 11 specifications, Decision Log (D-017), and Milestone Completion Tracker.
+- `docs/ENGINEERING_LOG.md` — Milestone 3 Phase 4 engineering log with reliability review refinements.
+
+#### 5. Technical Concepts Learned
+- **Row-Level Atomic Claiming in Relational Queues:** Using `updateMany({ where: { id, status: 'PENDING' }, data: { status: 'PROCESSING', attempts: { increment: 1 } } })` avoids race conditions without table-level locks or separate distributed mutexes (like Redis Redlock). PostgreSQL evaluates the conditional where-clause and locks matching rows exclusively, ensuring single-consumer semantics.
+- **Zombie Lock Reclamation (Stale Processing Sweep):** Database-backed queues must account for worker crashes (OOM, container kill). Polling for `status = 'PROCESSING'` where `lastAttemptAt <= NOW() - timeout` safely recovers stalled jobs without manual intervention.
+- **At-Least-Once Delivery vs. Exactly-Once Delivery:** Why true exactly-once delivery across external network boundaries (SMS gateways, webhooks) is impossible without downstream carrier deduplication; why atomic claiming protects against concurrent race conditions but cannot prevent duplicate dispatches if a worker crashes post-send.
+- **Suppression vs. Failure in Queues:** Permanent non-deliverability (DPDP opt-out, missing consent) must be suppressed and purged rather than marked as delivery `FAILED`, preventing false telemetry alarms.
+
+#### 6. Challenges Encountered & Resolutions
+- *Challenge 1 (Inngest v4 Function Creation Signature):* Inngest v4 threw an error on `createFunction({ id }, trigger, handler)`, stating triggers must be provided within the first configuration object.
+  *Resolution:* Configured triggers in the first argument using `triggers: [{ cron: "*/5 * * * *" }, { event: "enquivo/reminders.process" }]`.
+- *Challenge 2 (Next.js Dynamic Route Detection for Inngest):* Next.js App Router must recognize `/api/inngest` as dynamic rather than prerendering statically.
+  *Resolution:* `serve` from `inngest/next` exposes dynamic `GET`, `POST`, and `PUT` handlers, which Next.js Turbopack correctly identified during `npm run build` as `ƒ /api/inngest` (dynamic server-rendered on demand).
+- *Challenge 3 (Independent Reliability Review Nuances):* Independent review identified three reliability subtleties: (1) DPDP opt-outs were marked FAILED, corrupting deliverability metrics; (2) crashed workers left jobs permanently stuck in PROCESSING; and (3) immediate retries lacked backoff.
+  *Resolution:* Implemented 10-minute stale PROCESSING job recovery, deleted unsendable opt-out jobs with distinct `SKIPPED_OPTED_OUT` and `SKIPPED_NO_CONSENT` statuses, introduced 5-minute retry backoff, passed `idempotencyKey` downstream, and expanded the integration suite from 5 to 8 tests.
+
+#### 7. Verification Performed & Results
+- `npm test` — ✅ PASS (38/38 unit tests passed across 2 files: `serializers.test.ts` [18] and `lead-validation.test.ts` [20] in 734ms).
+- `npm run test:integration` — ✅ PASS (22/22 integration tests passed across 4 files: `db-connection.test.ts` [4], `lead-service.test.ts` [5], `booking-service.test.ts` [5], and `reminder-service.test.ts` [8] against isolated Neon test branch endpoint `ep-mute-butterfly-b3a54tpa` in 42.48s).
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings).
+- `npx tsc --noEmit` — ✅ PASS (0 errors).
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 5 static and dynamic pages compiled in 3.1s, `/api/inngest` active).
+
+#### 8. Division of Responsibility & AI Collaboration
+- **Developer Contribution:** Approved `ReminderService` architecture; required atomic claiming to avoid duplicate messages under concurrency; mandated DPDP Act 2023 opt-out checking before dispatch; required non-network mock provider formatting time in `Asia/Kolkata` (IST); mandated bounded retry policy (`maxAttempts = 3`); specified clean deletion of orphaned jobs for cancelled visits to prevent pollutive `FAILED` statuses; conducted focused reliability review; mandated 10m stale lock recovery, 5m retry backoff, and DPDP suppression without marking FAILED; and approved documentation updates.
+- **AI Assistance:** Implemented Inngest client and route handler, authored mock notification provider with IST formatting and idempotencyKey support, authored `ReminderService` with atomic conditional claiming, stale lock recovery, and 5m backoff, authored 8 integration tests against the isolated Neon test branch, fixed ESLint unused parameter warning, executed full verification suites, and synchronized all project documentation.
+
+#### 9. Interview Preparation & Defense
+- **How to explain this in an interview:** *"In Milestone 3 Phase 4, we completed the core backend service layer of ENQUIVO by implementing `ReminderService`. The business goal is to eliminate site-visit drop-off by automating 24-hour and 2-hour pre-visit notifications. The system engineering challenge is ensuring reliable dispatch across distributed workers without deploying heavy infrastructure like Kafka or Redis. We solved this using a database-backed state machine in PostgreSQL orchestrated by Inngest Cloud. Before dispatching, workers atomically claim due `PENDING` jobs using a conditional SQL update (`UPDATE reminder_jobs SET status = 'PROCESSING', attempts = attempts + 1 WHERE id = $1 AND status = 'PENDING'`). This guarantees at-least-once delivery with atomic claiming to prevent concurrent processing. To survive worker crashes, `processDueReminders()` performs a stale-lock recovery sweep at the start of each run, reclaiming jobs stuck in `PROCESSING` for over 10 minutes back to `PENDING` (or failing them if attempts >= 3). We enforce two critical business gates: first, we verify that the parent `SiteVisit` is still `CONFIRMED` (deleting orphaned jobs for cancelled visits to avoid erroneous messaging); and second, we enforce DPDP Act 2023 compliance by suppressing dispatch and purging jobs for opted-out buyers without marking them `FAILED`, preserving deliverability error telemetry. Transient failures are governed by a bounded retry policy (`maxAttempts = 3`) with a 5-minute backoff (`scheduledFor = NOW() + 5m`). The entire pipeline is verified against our isolated Neon test database with 22 passing integration tests."*
+- **Likely Interview Question 1:** *How do you prevent duplicate reminder dispatches if two Inngest workers execute simultaneously?*
+- **Technical Answer:** *We employ a two-tier defense. First, at data creation time, each `ReminderJob` is protected by a PostgreSQL unique index on `idempotencyKey` (`${visitId}:${reminderType}`), guaranteeing that duplicate scheduling requests cannot insert multiple queue rows. Second, at execution time, we avoid naive 'check-then-act' queries (`SELECT then UPDATE`). Instead, workers execute an atomic conditional update: `prisma.reminderJob.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'PROCESSING', attempts: { increment: 1 } } })`. PostgreSQL evaluates the `status = 'PENDING'` condition under an exclusive row lock. Exactly one worker updates 1 row (`count === 1`) and proceeds to send the notification; all other workers get `count === 0` and immediately skip execution.*
+- **Likely Interview Question 2:** *Can duplicate messages ever be sent in this architecture?*
+- **Technical Answer:** *Yes, under one specific distributed systems failure mode: crash after dispatch. If a worker successfully dispatches the notification through the carrier API, but the container crashes or the network drops before the worker can commit `status: SENT` to PostgreSQL, the database still records the job in `PROCESSING`. After 10 minutes, our stale-lock recovery sweep will reclaim the job to `PENDING`, and the next cron sweep will re-dispatch the reminder. This is why our system provides at-least-once delivery semantics rather than strictly exactly-once delivery. To mitigate this in production, we pass the stable `idempotencyKey` downstream in the payload so that external messaging providers can deduplicate dispatches at the carrier gateway level.*
+- **Key Engineering Trade-off:** Reverting to `PENDING` with 5-minute backoff vs. In-process sleep and retry. In serverless computing, sleeping inside a function (`await sleep(300000)`) holds open database connections and incurs billed execution duration. Updating `scheduledFor: NOW() + 5m` and reverting to `PENDING` allows the worker to terminate immediately; subsequent cron sweeps pick up the job only when due, achieving durable backoff with zero compute waste.
+
+---
+
 ## Unverified Historical Information Register
 
 In accordance with strict verification rules, the following details cannot be independently verified from the repository git log and are explicitly recorded as unverified assumptions:

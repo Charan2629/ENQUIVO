@@ -3,9 +3,9 @@
 > **Authoritative Current State Document**
 > **Milestone 1:** Completed and pushed to version control (`1a57d2d`).
 > **Milestone 2:** Schema implementation, live Neon PostgreSQL migration (`20261103165535_init`), live partial unique index verification, and guarded atomic seed execution (`npx prisma db seed`) COMPLETE & PUSHED (`2e3bd3c`).
-> **Milestone 3:** In Progress — Phase 1 (Test Isolation & Harness), Phase 2 (`LeadService`), and Phase 3 (`BookingService` implementation & integration tests) COMPLETE. Phase 4 (`ReminderService` background processor) next.
+> **Milestone 3:** Core Backend Services (`LeadService`, `BookingService`, `ReminderService`), Inngest background job processor, and integration test suite COMPLETE & VERIFIED (Pending Commit).
 > **Documentation Sync:** `docs/PROJECT_STATE.md`, `docs/TDD_DRAFT.md`, and `docs/ENGINEERING_LOG.md` are synchronized.
-> **Reference Time:** 2026-11-05T18:05:40+05:30 (November 5, 2026)
+> **Reference Time:** 2026-11-05T18:35:00+05:30 (November 5, 2026)
 
 ---
 
@@ -24,7 +24,7 @@
 |---|---|---|---|
 | **M1** | Project Scaffold, Folder Structure, `.env.example`, `docs/TDD_DRAFT.md`, `deployment.md` | ✅ COMPLETE & PUSHED | `tsc --noEmit` PASS \| `lint` PASS \| `build` PASS (5.9s) |
 | **M2** | Database Architecture: Prisma 7, 13 Models, Partial Index, BigInt DTOs, Neon Migration & Guarded Seed | ✅ COMPLETE & PUSHED (`2e3bd3c`) | `prisma validate` PASS \| `prisma generate` PASS \| `tsc --noEmit` PASS \| `lint` PASS \| `build` PASS (1.8s) \| Neon Migration `20261103165535_init` APPLIED \| Live `one_active_booking_per_slot` VERIFIED in `pg_indexes` \| Guarded Seed COMMITTED & VERIFIED (4 Users, 2 Projects, 7 Facts, 3 Leads, 12 Slots, 2 Visits, 4 Reminders, ₹30L Spend, 0 Orphans) |
-| **M3** | Core Backend Services (`LeadService`, `BookingService`, `ReminderService`) & Integration Tests | 🟡 IN PROGRESS (Phases 1, 2 & 3 Complete) | `vitest` unit tests PASS (38/38) \| `vitest` integration tests PASS (14/14 across 3 files) \| Isolated test endpoint `ep-mute-butterfly-b3a54tpa` verified \| `tsc --noEmit` PASS \| `lint` PASS \| `build` PASS \| Next: Phase 4 `ReminderService` |
+| **M3** | Core Backend Services (`LeadService`, `BookingService`, `ReminderService`) & Integration Tests | ✅ COMPLETE (Pending Commit) | `vitest` unit tests PASS (38/38) \| `vitest` integration tests PASS (19/19 across 4 files) \| Isolated test endpoint `ep-mute-butterfly-b3a54tpa` verified \| `tsc --noEmit` PASS \| `lint` PASS \| `build` PASS (Turbopack, `/api/inngest` live) \| Next: Milestone 4 (`AIConciergeService`) |
 | **M4** | `AIConciergeService` (EN/HI/GU, VERIFIED-only Fact Sheet retrieval, Zod tool calling, Handoff) | ⬜ NOT STARTED | After M3 |
 | **M5** | Buyer Mobile Concierge UI (minimalist, language toggle, DPDP consent, slot picker, RERA) | ⬜ NOT STARTED | After M4 |
 | **M6** | Sales Executive & Sales Head Portal (RBAC auth, Lead List, Handoff Queue, Fact Sheet Editor, Slot Manager) | ⬜ NOT STARTED | After M5 |
@@ -66,9 +66,10 @@
 - **D-011:** `FactSheet` dual-flag retrieval (`status = VERIFIED AND isActive = true`).
 - **D-012:** Separation of `BookingStatus` from `AttendanceOutcome`.
 - **D-013:** DPDP soft-delete with nullable unique `Lead.phone`, and chat transcript/handoff PII redaction (scheduled for M3/M4).
-- **D-014:** Test Database Isolation via Neon Copy-on-Write Branch (`enquivo-test`, endpoint `ep-mute-butterfly-b3a54tpa`) and Service Dependency Injection (`constructor(private db: PrismaClient = defaultPrisma)` implemented in `LeadService` and `BookingService`, approved pattern for upcoming `ReminderService`). Ensures zero test mutation on baseline seed data.
+- **D-014:** Test Database Isolation via Neon Copy-on-Write Branch (`enquivo-test`, endpoint `ep-mute-butterfly-b3a54tpa`) and Service Dependency Injection (`constructor(private db: PrismaClient = defaultPrisma)` implemented across `LeadService`, `BookingService`, and `ReminderService`). Ensures zero test mutation on baseline seed data.
 - **D-015:** Lead Ingestion Concurrency, First-Touch Attribution, and DPDP Consent Preservation Strategy. Deduplicates leads by normalized E.164 phone; retains immutable first-touch attribution (`Lead.source`); enriches missing fields non-destructively via atomic conditional SQL updates (`updateMany where email is null`); catches phone `P2002` outside aborted transactions to merge against winning records; retries `leadCode` collisions independently; and handles `ConsentRecord` via atomic `upsert` with `update: {}` to prevent PostgreSQL transaction aborts while preserving prior opt-out status (`optedOut: true`).
 - **D-016:** Atomic Conditional Slot Reservation and Two-Layer Concurrency Defense. `BookingService.bookVisit` updates `VisitSlot` conditionally (`WHERE id = $1 AND status = 'AVAILABLE' AND starts_at > NOW()`). Failure to update exactly 1 row immediately yields `SlotUnavailableError`. As defense in depth, PostgreSQL's partial unique index `one_active_booking_per_slot` (`WHERE booking_status = 'CONFIRMED'`) acts as an immutable database-level safety net. `cancelBooking` marks the visit `CANCELLED`, releases the slot to `AVAILABLE` only if its start time remains in the future, and deletes only `PENDING` reminder jobs to prevent erroneous dispatches without misusing the `FAILED` status. `recordAttendance` transitions `bookingStatus` to `COMPLETED`, records `attendedAt` only for `ATTENDED`, and supports both `CONFIRMED + UNRECORDED` (post-start) and `COMPLETED + UNRECORDED` visits without altering slot status. Independent code review determination: APPROVED (with a low-severity observation that P2002 handling could more precisely inspect the constraint target).
+- **D-017:** Background Job Processing, Atomic Claiming, Stale Recovery, and Bounded Retries for `ReminderService`. Dispatches 24h and 2h pre-visit reminders reliably without horizontal race conditions via: (1) Inngest Cloud cron (`*/5 * * * *`) and on-demand event trigger (`enquivo/reminders.process`) wired to Next.js route handler (`/api/inngest`); (2) atomic conditional claim (`UPDATE reminder_jobs SET status = 'PROCESSING', attempts = attempts + 1 WHERE id = $1 AND status = 'PENDING'`), providing at-least-once delivery with atomic claiming to prevent concurrent processing; (3) stale PROCESSING recovery reclaiming crashed jobs with `lastAttemptAt <= NOW() - 10m` to `PENDING` (if attempts < 3) or exhausting to `FAILED` (if attempts >= 3); (4) pre-dispatch re-verification of `SiteVisit.bookingStatus === 'CONFIRMED'`, deleting orphaned jobs upon cancellation rather than misusing `FAILED`; (5) pre-dispatch DPDP Act 2023 consent validation, suppressing dispatch and deleting unsendable jobs (`SKIPPED_OPTED_OUT`, `SKIPPED_NO_CONSENT`) to keep `FAILED` strictly reserved for delivery failure; (6) bounded retry state machine (`maxAttempts = 3`) with 5-minute backoff (`scheduledFor = NOW() + 5m`) before exhausting to `FAILED`; (7) constructor dependency injection (`ReminderService(db, notificationProvider)`) allowing mock notification provider injection without network calls; and (8) explicit documentation of the crash-after-dispatch boundary condition where worker death post-external send leads to duplicate delivery on recovery.
 
 ---
 
@@ -80,7 +81,7 @@
 | Prisma Generate | `npx prisma generate` | ✅ PASS (`Generated Prisma Client v7.10.1`) |
 | TypeScript | `npx tsc --noEmit` | ✅ PASS (0 errors) |
 | ESLint | `npm run lint` | ✅ PASS (0 errors, 0 warnings) |
-| Production Build | `npm run build` | ✅ PASS (Next.js 16.4.4 Turbopack, 4/4 static pages, compiled in 3.1s) |
+| Production Build | `npm run build` | ✅ PASS (Next.js 16.4.4 Turbopack, 5/5 static and dynamic pages including `/api/inngest`, compiled in 3.1s) |
 | Database Migration | `npx prisma migrate dev --name init` | ✅ APPLIED (`20261103165535_init` applied to Neon `neondb`) |
 | Live Partial Index Check | Query `pg_indexes` | ✅ VERIFIED (`CREATE UNIQUE INDEX one_active_booking_per_slot ON public.site_visits USING btree (slot_id) WHERE (booking_status = 'CONFIRMED'::"BookingStatus")`) |
 | Live Tables Check | Query `information_schema.tables` | ✅ VERIFIED (All 13 domain tables + `_prisma_migrations` present) |
@@ -90,8 +91,8 @@
 | Live Seed Catalog Check | SQL Left-Join Queries | ✅ VERIFIED (0 orphans, 0 pending reminders, exact ₹30L spend, draft fact isolated) |
 | Automated Unit Tests | `npm test` | ✅ PASS (`38/38 tests passed across 2 files: tests/unit/serializers.test.ts [18] and tests/unit/lead-validation.test.ts [20]`) |
 | Test Coverage | `npm run test:coverage` | ✅ PASS (100% Stmts, Branch, Funcs, Lines on `src/lib/serializers.ts`; 100% Stmts/Lines, 97.9% Branch on `src/lib/validations/lead.ts`) |
-| Integration Tests | `npm run test:integration` | ✅ PASS (`14/14 tests passed across 3 files: tests/integration/db-connection.test.ts [4], tests/integration/lead-service.test.ts [5], tests/integration/booking-service.test.ts [5]` against `ep-mute-butterfly-b3a54tpa`) |
-| Production Build | `npm run build` | ✅ PASS (Next.js 16.4.4 Turbopack, 4/4 static pages, compiled in 3.1s) |
+| Integration Tests | `npm run test:integration` | ✅ PASS (`22/22 tests passed across 4 files: tests/integration/db-connection.test.ts [4], tests/integration/lead-service.test.ts [5], tests/integration/booking-service.test.ts [5], tests/integration/reminder-service.test.ts [8]` against `ep-mute-butterfly-b3a54tpa`) |
+| Production Build | `npm run build` | ✅ PASS (Next.js 16.4.4 Turbopack, 5/5 static and dynamic pages including `/api/inngest`, compiled in 3.1s) |
 
 ---
 
@@ -112,10 +113,17 @@
    - Created `src/services/booking/booking.service.ts` implementing `BookingService` with constructor dependency injection (`constructor(private db: PrismaClient = defaultPrisma)`), atomic conditional slot reservation (`updateMany` where `status = AVAILABLE` and `startsAt > NOW()`), `SiteVisit` insertion (`CONFIRMED`), relative reminder scheduling (24h and 2h pre-visit, excluding past scheduled times), safe cancellation releasing only future slots and deleting only `PENDING` reminders while retaining the historical `SiteVisit` record, and attendance recording supporting both `CONFIRMED + UNRECORDED` (post-start) and `COMPLETED + UNRECORDED` visits without altering slot status. Zero schema migrations required.
    - Created `tests/integration/booking-service.test.ts` with 5 integration tests validating booking and reminder staging, `Promise.all` concurrent slot conflicts, cancellation with slot release and reminder deletion, rebooking while preserving cancelled history, past slot rejection, and attendance recording for both confirmed and historical completed visits.
    - Independent Code Review Determination: **APPROVED** (noting a low-severity observation that P2002 handling could more precisely inspect the constraint target).
-5. **Milestone 3 Phase 4 Next:** `ReminderService` implementation (Inngest background job processor, 24h and 2h pre-visit reminder dispatching with mock messaging provider, persistent `ReminderJob` state transitions `PENDING -> PROCESSING -> SENT / FAILED`, idempotency key verification `${visitId}:${reminderType}`, and bounded retry policy `maxAttempts = 3`).
+5. **Milestone 3 Phase 4 Complete (`ReminderService` Implementation & Verification):**
+   - Created `src/lib/inngest.ts` initializing the `enquivo` Inngest client.
+   - Created `src/services/reminder/mock-notification.provider.ts` simulating non-network SMS/WhatsApp dispatches with `Asia/Kolkata` (IST) timestamp formatting via `date-fns-tz`, accepting stable `idempotencyKey`.
+   - Created `src/services/reminder/reminder.service.ts` implementing `ReminderService` with constructor dependency injection, atomic conditional job claiming (`updateMany` matching `status: PENDING`), stale PROCESSING job recovery (10m threshold), pre-dispatch booking status verification (deleting orphaned jobs for cancelled visits without misusing `FAILED`), DPDP Act 2023 opt-out/missing consent suppression (`SKIPPED_OPTED_OUT`, `SKIPPED_NO_CONSENT`), and bounded retry state machine (`maxAttempts = 3`) with 5-minute backoff (`scheduledFor = NOW() + 5m`) before exhausting to `FAILED`. Explicitly documented at-least-once delivery semantics and crash-after-dispatch boundary condition.
+   - Created `src/services/reminder/reminder.inngest.ts` exposing `processDueRemindersFunction` triggered on cron (`*/5 * * * *`) and event (`enquivo/reminders.process`).
+   - Created `src/app/api/inngest/route.ts` serving Next.js App Router `GET, POST, PUT` endpoints.
+   - Created `tests/integration/reminder-service.test.ts` with 8 integration tests validating due processing (`SENT`), cancelled visit suppression, bounded retries with 5m backoff, retry exhaustion to FAILED, atomic claiming under concurrency, DPDP opt-out suppression, missing consent suppression, and stale PROCESSING recovery & exhaustion.
+6. **Milestone 3 Overall Status:** COMPLETE. All core backend services (`LeadService`, `BookingService`, `ReminderService`) and test suites passing (38 unit tests, 22 integration tests).
 
 ---
 
 ## 7. Exact Next Action
 
-Proceed to Milestone 3 Phase 4 (`ReminderService` background processor implementation and verification).
+Proceed to Milestone 4 (`AIConciergeService` with EN/HI/GU support, VERIFIED-only Fact Sheet retrieval with portfolio/project scope, Zod tool calling, and automated human handoff).

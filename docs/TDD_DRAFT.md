@@ -359,25 +359,38 @@ Covered in `tests/integration/booking-service.test.ts` (5 scenarios against isol
 ## 12. AI Concierge Design
 
 ### Languages
-Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer preference at conversation start.
+Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer preference at conversation start (`Conversation.language`). System instruction dynamically enforces corresponding language and script (Devanagari for Hindi, Gujarati script for Gujarati).
 
-### Grounding
-- AI retrieves only `status: VERIFIED, isActive: true` FactSheet records
-- Tool calls validated with Zod before execution
-- Conversation turns persisted in `ChatMessage` with `role` and grounding metadata
+### Grounding & Governance
+- **Database Query Filter:** Retrieves strictly `status: VERIFIED, isActive: true` FactSheet records. `DRAFT` or `UNVERIFIED` proposals (such as unapproved penthouses) are excluded at the SQL level.
+- **Scope Segregation:** Portfolio facts apply across all projects. Project inquiries retrieve portfolio facts plus matching `projectId` facts, preventing cross-project information leakage.
+- **Grounding Provenance:** Referenced fact IDs are persisted in `ChatMessage.groundingFactIds: string[]`.
+- **Identity & Booking Security:** `leadId` is never accepted as an AI tool argument; it is derived strictly from the validated `conversation.leadId` server-side.
+- **RERA Compliance Notice:** Mandatory display of compliance disclaimer: `"RERA Reg: DEMO-ONLY-NOT-VERIFIED"`. Never represented as an actual government-verified registration.
+- **First Response Attribution:** `Lead.firstResponseAt` is atomically set upon the first successfully persisted AI message turn (`WHERE firstResponseAt IS NULL`), never overwriting an existing timestamp.
+- **Fault-Tolerant Chat Ingestion:** Inbound buyer messages (`ChatMessage` role `USER`) are persisted prior to calling Gemini, guaranteeing zero message loss if downstream LLM generation fails.
 
-### Handoff Triggers (automatic)
+### Handoff Triggers (Automatic Server-Side Escalation)
 - Missing project-specific detail not in FactSheet
-- Unlisted amenity question
-- Price negotiation request
-- Buyer explicitly requests a human
-- Three consecutive unclear AI responses
+- Unlisted amenity inquiry (private pool, pet park, helipad)
+- Price negotiation or discount request
+- Buyer explicitly requests a human salesperson
+- Three consecutive unclear queries
+- **Salesperson Assignment:** Queries active `SALES_EXEC` records directly from PostgreSQL (`User.findFirst({ where: { role: 'SALES_EXEC' } })`) rather than hardcoding names.
 
-### Tool Functions (Milestone 4)
-- `getVerifiedFacts(scope)` — retrieves VERIFIED FactSheet entries
-- `checkSlotAvailability(date?)` — returns available visit slots
-- `bookVisitSlot(slotId, leadId)` — delegates to BookingService
-- `handoffToExecutive(reason, summary)` — creates Handoff record, notifies Sales Exec
+### Tool Functions (Server-Side Zod Validated)
+- `getVerifiedFacts({ scope?, projectId? })` — retrieves active `VERIFIED` FactSheet entries
+- `checkSlotAvailability({ startDate?, endDate? })` — queries available slots via `BookingService`
+- `bookVisitSlot({ slotId, confirmed })` — reserves slot via `BookingService` using server-derived `leadId` after explicit buyer confirmation
+- `handoffToExecutive({ escalationReason, summary })` — creates persistent `Handoff` record, assigning an active `SALES_EXEC` from database
+
+### Security & Architectural Observations (Milestone 4 Review)
+- **Review Determination:** APPROVED on 2026-11-05.
+- **Verified Facts Governance:** Dual-flag filtering (`status = 'VERIFIED' AND isActive = true`) combined with scope isolation (`(scope = 'PORTFOLIO' OR projectId = :projectId)`) guarantees that draft facts and cross-project data are excluded from model context.
+- **Identity Authorization:** Derived strictly from the database conversation record (`conversation.leadId`). Client-supplied `leadId` is never trusted for identity or booking authorization. Tool schemas reject model-supplied IDs.
+- **Observation 1 (Carried to M5):** Booking confirmation is currently LLM-evaluated (the model emits `confirmed: true` after instruction from the system prompt, validated via Zod). Independent server-side buyer confirmation is required before final booking in M5 (interactive visual slot picker widget).
+- **Observation 2 (Carried to M5/M6):** Conversation access currently uses `conversationId` as a bearer capability token. Secure buyer-session binding (e.g. signed cookie/session) is required before public exposure in M5; full Auth.js / RBAC remains planned for M6.
+- **Test Harness Status:** Automated tests use a mocked Gemini client via constructor dependency injection. Live Gemini smoke testing remains pending external `GEMINI_API_KEY` configuration.
 
 ---
 
@@ -427,6 +440,7 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 | D-015 | 2026-11-05 | Atomic conditional enrichment, PostgreSQL ON CONFLICT upsert for consent, and out-of-transaction P2002 recovery for lead ingestion | Concurrently ingesting leads introduces multiple race conditions: duplicate insertions for the same phone, clobbering existing profile fields during enrichment, and transaction aborts on consent creation. We resolved these by: (1) catching phone `P2002` outside aborted interactive transactions and merging against the winning committed lead in a fresh transaction; (2) using atomic conditional updates (`tx.lead.updateMany where email is null`) to prevent lost updates; (3) handling `ConsentRecord` via atomic `upsert` with `update: {}` so PostgreSQL executes `ON CONFLICT ("lead_id") DO NOTHING / no-op UPDATE`, avoiding transaction-aborting constraint errors while strictly preserving existing opt-out status (`optedOut: true`); and (4) hardening interactive transactions with `{ maxWait: 10000, timeout: 15000 }` to withstand remote WAN connection pool acquisition latencies | In-memory read-modify-write — rejected (lost updates under concurrency); Catching P2002 inside transaction for consent — rejected (aborts PostgreSQL transaction block); Automatic re-opt-in on re-ingestion — rejected (violates DPDP Act 2023 consent withdrawal) |
 | D-016 | 2026-11-05 | Atomic conditional slot reservation, relative reminder staging, and safe cancellation in BookingService | Managing appointments requires strict concurrency and temporal guards: (1) `bookVisit` executes an atomic conditional update (`UPDATE visit_slots SET status = 'BOOKED' WHERE id = $1 AND status = 'AVAILABLE' AND starts_at > NOW()`), throwing `SlotUnavailableError` if count !== 1; (2) PostgreSQL's partial unique index `one_active_booking_per_slot` (`WHERE booking_status = 'CONFIRMED'`) serves as an immutable database-level fallback; (3) pre-visit reminders (24h and 2h) are scheduled relative to `startsAt`, omitting past execution times; (4) `cancelBooking` preserves the historical `SiteVisit` row, releases the slot only if `startsAt > NOW()`, and deletes only `PENDING` reminder jobs to prevent erroneous delivery without misusing `FAILED`; (5) `recordAttendance` transitions `bookingStatus` to `COMPLETED`, records `attendedAt` only for `ATTENDED`, and supports both `CONFIRMED + UNRECORDED` (post-start) and `COMPLETED + UNRECORDED` visits without modifying slot status. Independent code review determination: APPROVED (noting a low-severity observation that P2002 handling could more precisely inspect the constraint target) | Application-level lock — rejected (race conditions under concurrency); In-transaction try-catch without conditional update — rejected (aborts transaction block on conflict); Marking cancelled reminders as FAILED — rejected (pollutes delivery failure metrics); Deleting cancelled SiteVisit rows — rejected (destroys audit and marketing attribution history) |
 | D-017 | 2026-11-05 | Inngest orchestration, atomic job claiming, stale recovery, and bounded retries for ReminderService | Pre-visit reminder dispatching requires high reliability without duplicate delivery across horizontal workers. We resolved this via: (1) Inngest Cloud cron (`*/5 * * * *`) and on-demand event trigger (`enquivo/reminders.process`) wired to Next.js route handler (`/api/inngest`); (2) atomic conditional claim (`UPDATE reminder_jobs SET status = 'PROCESSING', attempts = attempts + 1 WHERE id = $1 AND status = 'PENDING'`), guaranteeing at-least-once delivery with atomic claiming to prevent concurrent processing; (3) stale PROCESSING recovery reclaiming crashed jobs with `lastAttemptAt <= NOW() - 10m` to `PENDING` (if attempts < 3) or exhausting to `FAILED` (if attempts >= 3); (4) pre-dispatch re-verification of `SiteVisit.bookingStatus === 'CONFIRMED'`, deleting orphaned jobs upon cancellation rather than misusing `FAILED`; (5) pre-dispatch DPDP Act 2023 consent validation, suppressing dispatch and deleting unsendable jobs (`SKIPPED_OPTED_OUT`, `SKIPPED_NO_CONSENT`) to keep `FAILED` strictly reserved for delivery failure; (6) bounded retry state machine (`maxAttempts = 3`) with 5-minute backoff (`scheduledFor = NOW() + 5m`) before exhausting to `FAILED`; (7) constructor dependency injection (`ReminderService(db, notificationProvider)`) allowing mock notification provider injection without network calls; and (8) explicit recognition of the crash-after-dispatch boundary condition where worker death post-external send leads to duplicate delivery on recovery | Redis / RabbitMQ / BullMQ — rejected (unnecessary infrastructure dependencies per architecture rules); Non-atomic polling (`SELECT then UPDATE`) — rejected (race conditions under concurrent workers); Misusing `FAILED` for cancelled visits or DPDP opt-outs — rejected (pollutes delivery failure telemetry); Claiming "strictly exactly-once delivery" across external messaging boundaries — rejected (theoretically and practically impossible under worker crashes post-dispatch without carrier idempotency keys) |
+| D-018 | 2026-11-05 | AI Concierge grounding, server-derived identity, multilingual prompting, and database salesperson assignment | Building a trustworthy real estate conversational assistant requires strict anti-hallucination guardrails and security: (1) dual-flag FactSheet retrieval (`status = 'VERIFIED' AND isActive = true`) with project/portfolio scoping, ensuring draft facts and facts from unrelated projects never enter model context; (2) server-side identity derivation where `leadId` is derived strictly from the validated `conversation.leadId` rather than accepted from Gemini tool arguments, preventing IDOR/identity spoofing; (3) reuse of `BookingService` for atomic slot checking and reservation after explicit buyer confirmation; (4) dynamic salesperson assignment querying active `SALES_EXEC` records from PostgreSQL rather than hardcoding employee names; (5) persistence of user messages prior to LLM calls to prevent message loss on model failure; (6) atomic `firstResponseAt` setting on first successful AI response (`WHERE firstResponseAt IS NULL`); and (7) constructor dependency injection (`AIConciergeService(db, bookingService, geminiClient)`) allowing automated integration tests to execute with deterministic mock Gemini clients without external API key dependencies. *Independent Security Review:* APPROVED on 2026-11-05, noting two observations carried to M5: LLM-evaluated confirmation requiring independent server-side buyer confirmation in M5, and bearer capability `conversationId` access requiring secure buyer-session binding before public exposure in M5 (with Auth.js/RBAC in M6). Live Gemini smoke testing remains pending API key configuration. | Client-side Gemini API calls — rejected (exposes API key and bypasses database governance); Accepting leadId or salesperson in tool arguments — rejected (critical security vulnerability / IDOR); Hardcoding employee names — rejected (fragile to org changes); System prompt only grounding without database filtering — rejected (model hallucination risk) |
 
 ---
 
@@ -453,8 +467,8 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 |---|---|---|---|
 | M1 | Project Scaffold, Folder Structure, `.env.example`, `docs/TDD_DRAFT.md`, `deployment.md` | ✅ Complete | `1a57d2d` |
 | M2 | Prisma Schema (13 models + partial unique index), Neon Migration & Guarded Seed | ✅ Complete | `2e3bd3c` |
-| M3 | Core Backend Services (LeadService, BookingService, ReminderService) & Integration Tests | ✅ Complete | *(Pending Commit)* |
-| M4 | AIConciergeService (EN/HI/GU, VERIFIED-only facts, Zod tool calling, handoff) | ⬜ Pending | — |
+| M3 | Core Backend Services (LeadService, BookingService, ReminderService) & Integration Tests | ✅ Complete | `cdb8f14` |
+| M4 | AIConciergeService (EN/HI/GU, VERIFIED-only facts, Zod tool calling, handoff) | ✅ Complete | *(Pending Commit)* |
 | M5 | Buyer Mobile Concierge UI (language toggle, DPDP consent, slot picker, RERA disclaimer) | ⬜ Pending | — |
 | M6 | Sales Executive & Sales Head Portal (RBAC auth, Lead List, Handoff Queue, Fact Sheet Editor, Slot Manager) | ⬜ Pending | — |
 | M7 | Source Attribution & ROI Dashboard + Complete Vitest Suite | ⬜ Pending | — |

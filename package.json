@@ -14,6 +14,7 @@
     "test:integration": "vitest run --config vitest.integration.config.mts"
   },
   "dependencies": {
+    "@google/genai": "^2.32.0",
     "@prisma/adapter-pg": "^7.10.1",
     "@prisma/client": "7.10.1",
     "date-fns": "^4.4.0",

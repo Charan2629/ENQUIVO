@@ -489,6 +489,96 @@ In real estate lead-response pipelines, site-visit drop-off and no-shows severel
 
 ---
 
+### Milestone 4: AIConciergeService Implementation, Grounding Governance & Multilingual Assistant
+
+- **Date:** 2026-11-05
+- **Status:** Complete (Pending Commit)
+
+#### 1. Context & Objectives
+Real estate prospective buyers demand immediate, 24/7 engagement across regional languages (English, Hindi, and Gujarati), but AI chatbots in real estate carry immense legal and operational risks: hallucinating amenities, misquoting unit prices, violating RERA regulations, or leaking data across projects. Milestone 4 implemented `AIConciergeService` with strict database-grounded fact retrieval (`status = VERIFIED` and `isActive = true`), scoped isolation between portfolio-level and project-specific facts, Zod-validated server-side function calling, direct calendar delegation to `BookingService`, dynamic salesperson escalation, and security guarantees preventing identity spoofing.
+
+#### 2. Architecture & Design Decisions
+- **SDK & Model Choice:** Integrated Google Gemini API via official `@google/genai` (`^0.1.1`) SDK using `gemini-2.5-flash`. All API keys stay strictly server-side (`GEMINI_API_KEY`).
+- **Database-Grounded Fact Sheet Filtering & Scope Isolation:** Factual property queries are answered exclusively using `FactSheet` rows filtered by `status = 'VERIFIED' AND isActive = true AND (scope = 'PORTFOLIO' OR projectId = :projectId)`. Unapproved draft proposals (such as the seeded penthouse entry) and facts belonging to other projects are strictly excluded from the LLM prompt and tool outputs. The IDs of all retrieved grounding facts are persisted in `ChatMessage.groundingFactIds`.
+- **Server-Derived Identity Enforcement (Anti-Spoofing / IDOR Defense):** In function calling, the model is never allowed to provide or override `leadId` or `assignedToId`. For `bookVisitSlot`, the schema requires only `{ slotId, confirmed }`; the service injects `leadId = conversation.leadId`. For `handoffToExecutive`, the schema accepts only `{ escalationReason, summary }`; the service dynamically assigns an active `SALES_EXEC` from PostgreSQL.
+- **Direct Delegation to `BookingService`:** Rather than duplicating slot querying or booking logic, `AIConciergeService` delegates `checkSlotAvailability` and `bookVisitSlot` directly to `BookingService`. This guarantees atomic conditional updates and two-layer concurrency defenses apply uniformly.
+- **Multilingual System Instruction with RERA Disclaimer:** Dynamically generates system instructions in English, Hindi, or Gujarati based on `conversation.language`, enforcing: (1) strict fact sheet grounding; (2) mandatory compliance disclaimer (`RERA Reg: DEMO-ONLY-NOT-VERIFIED`); (3) proactive collection of name/budget/configuration if missing; (4) prompt human handoff for price negotiations, unlisted amenities, or missing details; and (5) requiring explicit buyer confirmation before reserving visit slots.
+- **Fault-Tolerant Pre-LLM User Message Persistence:** In user-initiated chat, the inbound message (`role: USER`) is inserted into `ChatMessage` *before* calling the Gemini API. If the LLM provider times out or throws an error, the buyer's query is never lost from the audit trail.
+- **Atomic Non-Overwriting First Response Time Tracking:** On the first AI response generated for a lead, `Lead.firstResponseAt` is updated atomically (`UPDATE leads SET first_response_at = NOW() WHERE id = $1 AND first_response_at IS NULL`), establishing an immutable benchmark for the 14-hour industry baseline response metric.
+- **Constructor Dependency Injection & Zero-Network Integration Testing:** Constructor accepts optional `PrismaClient`, `BookingService`, and `GeminiClientInterface`. Integration tests execute against the isolated Neon test database using a deterministic mock Gemini client with zero external API calls or live credential requirements.
+
+#### 3. Key Implementation Details
+- `src/lib/validations/ai.ts`: Zod schemas and TypeScript types for `chatMessageInputSchema` and the four tool argument definitions (`getVerifiedFactsToolSchema`, `checkSlotAvailabilityToolSchema`, `bookVisitSlotToolSchema`, `handoffToExecutiveToolSchema`).
+- `src/services/ai/ai.service.ts`: `AIConciergeService` class containing:
+  - `sendMessage({ conversationId, message, leadId })`: Pre-persists user message, builds multilingual instructions with RERA disclaimer, formats multi-turn history into Gemini `Content` objects, declares server-side function calling tools, executes tool calls against Prisma and `BookingService`, records grounding fact IDs, updates `firstResponseAt` atomically, and persists the assistant reply.
+  - `getVerifiedFacts({ scope, projectId })`: Dual-flag query (`status: VERIFIED`, `isActive: true`) isolating portfolio and project scopes.
+  - `buildSystemInstruction(language, projectId)`: Generates localized instructions in EN, HI, or GU.
+- `src/app/api/chat/route.ts`: Next.js App Router POST route handler parsing JSON, validating input with Zod, delegating to `AIConciergeService`, and returning structured JSON (or 400/403/404/500 HTTP errors).
+- `tests/integration/ai-service.test.ts`: 7 integration tests against isolated Neon test branch (`enquivo-test`):
+  1. `getVerifiedFacts`: strictly filters active `VERIFIED` facts and isolates project scopes (draft facts and unrelated projects excluded).
+  2. `groundingFactIds` persistence and `firstResponseAt` capture.
+  3. Security checks: rejects mismatched `leadId` with `AISecurityError` and missing conversation with `AIConversationNotFoundError`.
+  4. Tool calling: `checkSlotAvailability` and `bookVisitSlot` delegate to `BookingService` with server-derived `leadId`.
+  5. Tool calling: `handoffToExecutive` creates `Handoff` dynamically assigning an active `SALES_EXEC`.
+  6. Multilingual system prompt generation: English, Hindi, and Gujarati with RERA disclaimer.
+  7. Pre-LLM persistence: persists user message even when Gemini API throws an error.
+
+#### 4. Files Created or Modified
+- `src/lib/validations/ai.ts` — Zod schemas and types for chat input and AI tool calls.
+- `src/services/ai/ai.service.ts` — Core `AIConciergeService` with grounding governance, tool calling, and multilingual prompting.
+- `src/app/api/chat/route.ts` — Next.js App Router POST endpoint for concierge chat.
+- `tests/integration/ai-service.test.ts` — 7 integration tests against isolated Neon test branch.
+- `package.json` & `package-lock.json` — Added `@google/genai` dependency.
+- `docs/TDD_DRAFT.md` — Updated Section 12 specifications, Section 14 Decision Log (D-018), and Milestone Tracker.
+- `docs/PROJECT_STATE.md` — Updated status, 29-test verification summary, and D-018.
+- `docs/ENGINEERING_LOG.md` — Milestone 4 engineering journal and interview preparation block.
+- `deployment.md` — Updated test execution notes.
+
+#### 5. Technical Concepts Learned
+- **Prompt Grounding vs. System Prompt Hallucination Defenses:** Prompt engineering alone cannot prevent hallucinations if unverified data is loaded into the model context. Grounding requires structural database filtering (`status: VERIFIED`, `isActive: true`) before facts ever reach prompt assembly.
+- **Server-Derived Context in Function Calling:** LLMs cannot be trusted with administrative or authorization parameters (such as `leadId`, `userId`, or role). Tools exposed to the LLM must accept only domain parameters (`slotId`, `confirmed`), while the execution engine derives tenant and identity boundaries securely from authenticated server session state.
+- **Dynamic Entity Assignment in Workflows:** Hardcoding assignee IDs (e.g. `user_vikram_mehta`) creates brittle production workflows. Querying active roles dynamically (`findFirst({ where: { role: 'SALES_EXEC' } })`) ensures organizational changes or employee departures do not break escalation paths.
+- **Pre-Call Ingestion vs. Post-Call Persistence:** Persisting user input prior to remote LLM invocation ensures zero data loss during upstream outages, supporting retryability and customer support visibility.
+
+#### 6. Challenges Encountered & Resolutions
+- *Challenge 1 (Gemini SDK Typing & `any` Linting Warnings):* `@google/genai` SDK response parts lack strict TypeScript discriminated unions for arbitrary function call content, triggering ESLint `@typescript-eslint/no-explicit-any` warnings.
+  *Resolution:* Defined a clean internal `ContentPart` interface with type predicate guards (`isFunctionCallPart`), completely eliminating all `any` usages without bypassing type checking.
+- *Challenge 2 (Integration Test Sales Executive Selection):* In integration tests, creating a new `SALES_EXEC` clashed with the seeded `Vikram Mehta` record because `findFirst({ orderBy: { createdAt: 'asc' } })` deterministically selected the earlier seeded user.
+  *Resolution:* Updated the test to query the database's existing first `SALES_EXEC` and assert that the handoff was correctly assigned to that dynamic executive.
+- *Challenge 3 (Formatting at End of File):* `git diff --check` flagged extra blank lines at EOF on newly created files.
+  *Resolution:* Cleaned EOF formatting to ensure exactly one final newline across all files.
+
+#### 7. Verification Performed & Results
+- `npm test` — ✅ PASS (38/38 unit tests passed across 2 files: `serializers.test.ts` [18] and `lead-validation.test.ts` [20] in 759ms).
+- `npm run test:integration` — ✅ PASS (29/29 integration tests passed across 5 files: `db-connection.test.ts` [4], `lead-service.test.ts` [5], `booking-service.test.ts` [5], `reminder-service.test.ts` [8], and `ai-service.test.ts` [7] against isolated Neon test branch endpoint `ep-mute-butterfly-b3a54tpa` in 41.13s).
+- `npx tsc --noEmit` — ✅ PASS (0 errors).
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings).
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 6 static and dynamic pages compiled in 6.5s, `ƒ /api/chat` and `ƒ /api/inngest` active).
+- `git diff --check` — ✅ PASS (0 whitespace/formatting warnings).
+
+#### 8. Independent Security Review: APPROVED (with Observations for M5)
+- **Review Determination:** **APPROVED** on 2026-11-05.
+- **Fact Retrieval Scope & Status:** Verified that `getVerifiedFacts` strictly enforces `status: VERIFIED`, `isActive: true`, and project scoping (`(scope = 'PORTFOLIO' OR projectId = :projectId)`). Integration test 1 proves that DRAFT facts (e.g. unapproved penthouse proposal) and facts from unrelated projects cannot enter the model context.
+- **Identity & Booking Authorization:** Verified that booking identity is derived strictly from the database conversation record (`conversation.leadId`). Client-supplied `leadId` is never trusted for identity or booking authorization; if provided, it is strictly an assertion check. Tool schemas reject model-supplied IDs.
+- **Observation 1 (LLM Confirmation Boundary — Carried to M5):** The current booking confirmation is LLM-evaluated (the model emits `confirmed: true` after being instructed by the system prompt, validated via Zod). Independent server-side buyer confirmation is required before final booking in M5 (interactive visual slot picker widget).
+- **Observation 2 (Conversation Access Boundary — Carried to M5/M6):** `/api/chat` currently relies on `conversationId` as a bearer capability token. Secure buyer-session binding (e.g. signed cookie/session) is required before public exposure in M5, while full Auth.js / RBAC remains planned for M6.
+- **Test Harness vs. Live Testing:** Automated integration tests execute deterministically with a mocked Gemini client via constructor dependency injection (`GeminiClientInterface`), ensuring zero network dependencies or live API key exposure. Live Gemini smoke testing remains pending external `GEMINI_API_KEY` configuration.
+- **Verification Metric Summary:** 38 unit tests passed, 29 integration tests passed across 5 files, `npx tsc --noEmit` 0 errors, `npm run lint` 0 errors/warnings, and `npm run build` passed.
+
+#### 9. Division of Responsibility & AI Collaboration
+- **Developer Contribution:** Approved Milestone 4 architecture and tool execution patterns; mandated strict dual-flag FactSheet grounding (`status: VERIFIED`, `isActive: true`); prohibited draft facts and cross-project leakage; mandated server-derived lead identity over tool argument spoofing; rejected hardcoded salesperson assignments in favor of dynamic database querying; specified pre-LLM user message persistence; required multilingual prompt generation with mandatory RERA disclaimers; and approved documentation updates.
+- **AI Assistance:** Implemented validation schemas (`src/lib/validations/ai.ts`), authored `AIConciergeService` with grounding queries, tool execution, and multilingual prompt builder, authored `src/app/api/chat/route.ts`, resolved ESLint and TypeScript typings, authored 7 comprehensive integration tests with mocked Gemini responses against the isolated test database, executed test suites, and synchronized documentation.
+
+#### 10. Interview Preparation & Defense
+- **How to explain this in an interview:** *"In Milestone 4, we implemented the AI Concierge for ENQUIVO using Google Gemini and Next.js Route Handlers. In real estate, deploying LLMs without rigid grounding leads to severe regulatory and contractual liabilities—such as misquoting prices, fabricating amenities, or promising unauthorized discounts. We engineered a three-tier defense: First, our FactSheet grounding query enforces dual-flag filtering (`status = 'VERIFIED' AND isActive = true`) combined with scope isolation (`(scope = 'PORTFOLIO' OR projectId = :projectId)`). Draft proposals (like our seeded penthouse proposal) and facts from unrelated projects are mathematically impossible to retrieve into model context. Second, we eliminate IDOR and argument spoofing by never allowing the LLM to supply `leadId` or salesperson IDs in function calling. The tool schemas only accept operational parameters (like `slotId`), and the service injects the server-validated `leadId` from the active conversation context. Third, all calendar operations delegate directly to `BookingService`, ensuring our two-layer concurrency defense (conditional slot update + partial unique index) governs AI bookings. If a buyer asks for unlisted amenities or price negotiations, the concierge automatically triggers `handoffToExecutive`, creating a persistent handoff record assigned dynamically to an active salesperson from PostgreSQL."*
+- **Likely Interview Question 1:** *Why shouldn't you allow the LLM function call to provide the `leadId` when booking a visit?*
+- **Technical Answer:** *Trust boundaries and authorization. In an agentic architecture, LLM output must be treated as untrusted user input. If the `bookVisitSlot` tool schema accepts `leadId`, an attacker could manipulate the prompt (via prompt injection or conversation steering) to supply another buyer's `leadId`, reserving appointments or triggering reminder SMS spam against arbitrary victims (Insecure Direct Object Reference / IDOR). By deriving `leadId` server-side strictly from the validated conversation record (`conversation.leadId`), we enforce an immutable security boundary that the model cannot subvert.*
+- **Likely Interview Question 2:** *Why do you persist the buyer's chat message in the database before calling the Gemini API?*
+- **Technical Answer:** *Fault tolerance and data integrity. Remote AI APIs are subject to network latency, rate limits, and transient 5xx outages. If we waited for Gemini to respond before persisting the user message, any upstream failure would drop the buyer's query entirely. By persisting the `USER` message to PostgreSQL first, the lead's intent is recorded immediately. Even if the LLM invocation fails, our route handler logs the error, the buyer's query is visible in the Sales Head portal, and a human salesperson can follow up seamlessly.*
+- **Key Engineering Trade-off:** Server-side Tool Execution vs. Autonomous Agent Frameworks (LangChain/CrewAI). In an enterprise production setting, heavy multi-agent abstraction frameworks add runtime bloat, opaque prompt wrapping, and difficult-to-test dependency trees. Implementing a lightweight, service-oriented tool dispatcher with Zod validation gives us 100% type safety, deterministic mockability in integration tests, and minimal latency overhead.
+
+---
+
 ## Unverified Historical Information Register
 
 In accordance with strict verification rules, the following details cannot be independently verified from the repository git log and are explicitly recorded as unverified assumptions:

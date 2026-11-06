@@ -492,7 +492,7 @@ In real estate lead-response pipelines, site-visit drop-off and no-shows severel
 ### Milestone 4: AIConciergeService Implementation, Grounding Governance & Multilingual Assistant
 
 - **Date:** 2026-11-05
-- **Status:** Complete (Pending Commit)
+- **Status:** Complete (Committed locally: `1e9831e`)
 
 #### 1. Context & Objectives
 Real estate prospective buyers demand immediate, 24/7 engagement across regional languages (English, Hindi, and Gujarati), but AI chatbots in real estate carry immense legal and operational risks: hallucinating amenities, misquoting unit prices, violating RERA regulations, or leaking data across projects. Milestone 4 implemented `AIConciergeService` with strict database-grounded fact retrieval (`status = VERIFIED` and `isActive = true`), scoped isolation between portfolio-level and project-specific facts, Zod-validated server-side function calling, direct calendar delegation to `BookingService`, dynamic salesperson escalation, and security guarantees preventing identity spoofing.
@@ -576,6 +576,108 @@ Real estate prospective buyers demand immediate, 24/7 engagement across regional
 - **Likely Interview Question 2:** *Why do you persist the buyer's chat message in the database before calling the Gemini API?*
 - **Technical Answer:** *Fault tolerance and data integrity. Remote AI APIs are subject to network latency, rate limits, and transient 5xx outages. If we waited for Gemini to respond before persisting the user message, any upstream failure would drop the buyer's query entirely. By persisting the `USER` message to PostgreSQL first, the lead's intent is recorded immediately. Even if the LLM invocation fails, our route handler logs the error, the buyer's query is visible in the Sales Head portal, and a human salesperson can follow up seamlessly.*
 - **Key Engineering Trade-off:** Server-side Tool Execution vs. Autonomous Agent Frameworks (LangChain/CrewAI). In an enterprise production setting, heavy multi-agent abstraction frameworks add runtime bloat, opaque prompt wrapping, and difficult-to-test dependency trees. Implementing a lightweight, service-oriented tool dispatcher with Zod validation gives us 100% type safety, deterministic mockability in integration tests, and minimal latency overhead.
+
+---
+
+## Milestone 5: Buyer Concierge Experience
+
+### Milestone 5 — Phase 1: Public Property Landing Page Implementation & Portfolio Presentation
+
+- **Date:** 2026-11-06
+- **Status:** Phase 1 Complete (Pending Commit)
+
+#### 1. Context & Objectives
+Milestone 5 focuses on the buyer-facing experience of ENQUIVO. Prior to Phase 1, the frontend root (`src/app/page.tsx`) was an unstyled Next.js starter template. To establish a credible, premium digital presence for residential real estate buyers in Ahmedabad, Phase 1 delivered a comprehensive public property landing page. The objectives were:
+1. Deliver a polished, editorial residential real estate website that feels like a bespoke property developer's digital showroom rather than a generic SaaS template or admin dashboard.
+2. Dynamically query live PostgreSQL records to showcase the developer's two live Ahmedabad projects (`Prakriti Heights` and `Vaastu Enclave`) alongside verified portfolio-level attributes (420 total units, ₹65L–₹1.2Cr pricing, prime Ahmedabad West corridors).
+3. Ensure full responsiveness across mobile, tablet, and desktop screens, featuring an accessible slide-over mobile drawer and sticky brand navigation.
+4. Display statutory RERA disclaimers (`RERA Reg: DEMO-ONLY-NOT-VERIFIED`) and project locations (`Asia/Kolkata` timezone context) transparently in accordance with regulatory assumptions.
+5. Strictly isolate and decouple the public web interface from the unauthenticated `/api/chat` route, preserving the security boundary identified in the Milestone 4 review until secure buyer-session binding is introduced in Phase 2.
+
+#### 2. Architecture & Design Decisions
+- **Async React Server Component for Data Fetching:** `src/app/page.tsx` was implemented as an async React Server Component executing direct Prisma queries (`prisma.project.findMany` and `prisma.factSheet.findMany`). This eliminates client-side network round-trips, prevents loading waterfalls, hides database schemas from the browser bundle, and renders fully populated HTML for immediate initial paint.
+- **Next.js 16 Cache Components Migration (`export const instant = false`, Decision D-019):** Next.js 16 configured with `cacheComponents: true` and `partialPrefetching = true` strictly prohibits legacy route segment configs (`export const dynamic = "force-dynamic"` or `export const revalidate = 60`). Attempting uncached database queries without explicit authorization throws prerender validation errors during build. We applied Next.js 16's official `export const instant = false` directive, explicitly authorizing runtime blocking database access and compiling the homepage cleanly as `ƒ /` (dynamic server-rendered).
+- **Component Decomposition Strategy:** Decomposed the buyer landing experience into six focused, single-responsibility components in `src/components/buyer/`:
+  - `PublicNav`: Sticky header with brand identity, desktop anchor navigation (`#projects`, `#why-us`, `#concierge`, `#contact`), site-visit CTA, and accessible mobile drawer toggle.
+  - `HeroSection`: Architectural headline, Ahmedabad West location badge, primary "Explore Residences" and secondary "Meet AI Concierge" CTAs, and a database-grounded portfolio statistics banner (2 live projects, 420 apartments, ₹65L–₹1.2Cr).
+  - `ProjectShowcase`: Grid of project cards for `Prakriti Heights` and `Vaastu Enclave` rendering verified database attributes (configurations, price ranges, possession timelines, and RERA disclaimer).
+  - `WhyChooseUs`: Four value pillars grounded strictly in verified portfolio facts (prime locations, transparent pricing, statutory compliance, and architectural design), with zero fabricated testimonials or fake awards.
+  - `ConciergeCtaSection`: Staging and value-proposition banner introducing the upcoming 24/7 multilingual AI concierge.
+  - `PublicFooter`: Office and site locations in Ahmedabad, `Asia/Kolkata` operating reference, copyright, and statutory RERA compliance notice.
+- **Security Boundary Defense (Strict Decoupling):** The public landing page maintains complete physical separation from the unauthenticated `/api/chat` endpoint. CTAs link to visual anchor tags (`#concierge`, `#projects`) rather than dispatching requests to `/api/chat`. Buyer chat session initialization is deferred to Phase 2, where secure signed session binding (e.g. HTTP-only cookies) will be enforced.
+
+#### 3. Key Implementation Details
+- `src/app/page.tsx`: Async Server Component with `export const instant = false`. Queries `prisma.project.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } })` and `prisma.factSheet.findMany({ where: { scope: 'PORTFOLIO', status: 'VERIFIED', isActive: true } })`. Extracts portfolio metrics and passes strongly typed props to buyer presentation components.
+- `src/components/buyer/public-nav.tsx`: Client Component (`"use client"`) managing responsive navigation. Implements desktop link bar and a mobile slide-out drawer with backdrop blur, accessible ARIA attributes (`aria-expanded`, `aria-label`), and smooth auto-closing on anchor clicks.
+- `src/components/buyer/hero-section.tsx`: Editorial layout utilizing deep slate typography (`text-slate-900`), warm amber accents, and an interactive stats ribbon displaying live database-backed numbers.
+- `src/components/buyer/project-showcase.tsx`: Responsive 2-column grid rendering project cards with blueprint geometric SVG architectural motifs, specification pills (2 & 3 BHK, ₹65L–₹1.2Cr, Dec 2027 / Jun 2028 possession), and RERA `DEMO-ONLY-NOT-VERIFIED` badges.
+- `src/components/buyer/why-choose-us.tsx`: Clean 4-card grid highlighting verified developer fundamentals: Prime Locations (SG Highway & Shela), Transparent Pricing (Zero hidden charges), Statutory Compliance (RERA-aligned escrow), and Premium Architecture (420 residences).
+- `src/components/buyer/concierge-cta-section.tsx`: Feature card showcasing the upcoming multilingual capability (EN/HI/GU), instant 24/7 responses, and schedule-booking workflow.
+- `src/components/buyer/public-footer.tsx`: Comprehensive footer providing authentic contact information, Ahmedabad site addresses, and regulatory disclaimers.
+
+#### 4. Important Files Created / Modified
+- `src/app/page.tsx` — Async Server Component with runtime PostgreSQL queries and Next.js 16 `instant = false`.
+- `src/components/buyer/public-nav.tsx` — Responsive navigation header with mobile drawer toggle.
+- `src/components/buyer/hero-section.tsx` — Editorial hero section with live portfolio statistics.
+- `src/components/buyer/project-showcase.tsx` — Dynamic PostgreSQL project cards with verified specifications.
+- `src/components/buyer/why-choose-us.tsx` — Four developer value pillars grounded in verified facts.
+- `src/components/buyer/concierge-cta-section.tsx` — Multilingual AI concierge staging card.
+- `src/components/buyer/public-footer.tsx` — Corporate footer with RERA compliance disclaimer.
+- `package.json` & `package-lock.json` — Added `lucide-react` (`^1.16.0`).
+- `docs/PROJECT_STATE.md` — Updated operational state, verification table, and Decision D-019.
+- `docs/TDD_DRAFT.md` — Updated Tech Stack (Lucide React), Decision Log (D-019), and Milestone Completion Tracker.
+- `docs/ENGINEERING_LOG.md` — Documented Milestone 5 Phase 1 design, implementation, and interview defenses.
+
+#### 5. Technical Concepts Learned
+- **Next.js 16 Cache Components & Prerendering Semantics:** Understanding how Next.js 16 separates static prerendering from dynamic runtime rendering when `nextConfig.cacheComponents = true`. Legacy route segment options (`dynamic = "force-dynamic"`, `revalidate = 60`) are deprecated and blocked at compile time. Uncached database queries on Server Components require `export const instant = false` to authorize blocking server rendering while compiling as `ƒ /` dynamic.
+- **Server Component Direct Database Querying:** Why executing Prisma queries directly within Server Components (`async function Page()`) is superior to client-side `useEffect` or route handler fetch calls: zero client-side JavaScript payload overhead, zero CORS/fetch serialization overhead, and zero exposure of database credentials or internal schemas.
+- **Accessible Responsive Drawer Navigation:** Managing focus and backdrop clipping with clean React state toggles, ensuring mobile navigation provides instant tactile feedback and closes automatically when anchor links are clicked.
+
+#### 6. Challenges Encountered & Resolutions
+- *Challenge 1 (Next.js 16 Build Incompatibilities with Legacy Dynamic Directives):* Adding `export const dynamic = "force-dynamic"` or `export const revalidate = 60` caused Next.js 16 Turbopack build failures (`Route segment config "dynamic" is not compatible with nextConfig.cacheComponents`).
+  *Resolution:* Consulted internal Next.js 16 documentation in `node_modules/next/dist/docs/01-app/02-guides/migrating-to-cache-components.md`. Removed legacy configs and adopted `export const instant = false;`, which cleanly compiles the route as dynamic server-rendered (`ƒ /`) without throwing uncached runtime prerender errors.
+- *Challenge 2 (Missing Lucide React Dependency):* `lucide-react` icons were referenced in design components but the package was not yet installed in `package.json`.
+  *Resolution:* Installed `lucide-react` (`^1.16.0`) via `npm install lucide-react`, maintaining clean dependency boundaries.
+- *Challenge 3 (ESLint Unused Props & Imports):* Initial build flagged unused icon imports (`Link`, `ArrowRight`, `MapPin`, `CheckCircle2`) and unused props (`totalApartments`, `configurationsFact`, `priceRangeFact`).
+  *Resolution:* Cleaned unused imports and actively wired `totalApartments` into the Hero stats ribbon and `configurationsFact` / `priceRangeFact` into the project card specifications, resolving all warnings with 0 errors and 0 warnings.
+
+#### 7. Verification Performed & Results
+- `npx tsc --noEmit` — ✅ PASS (0 errors).
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings).
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 6 static and dynamic routes compiled in 2.9s, `ƒ /` dynamic server-rendered).
+- `npm test` — ✅ PASS (38/38 unit tests passed across 2 files: `serializers.test.ts` [18] and `lead-validation.test.ts` [20] in 882ms).
+- `npm run test:integration` — ✅ PASS (29/29 integration tests passed across 5 files: `db-connection.test.ts` [4], `lead-service.test.ts` [5], `booking-service.test.ts` [5], `reminder-service.test.ts` [8], and `ai-service.test.ts` [7] against isolated Neon test branch endpoint `ep-mute-butterfly-b3a54tpa` in 41.13s).
+- `Landing Page Live HTTP Smoke Test` — ✅ VERIFIED (`curl http://localhost:3001/` returned 94,879 bytes of rendered HTML containing `Prakriti Heights`, `Vaastu Enclave`, `420`, `SG Highway`, `Shela`, and `RERA Reg: DEMO-ONLY-NOT-VERIFIED`).
+- `git diff --check` — ✅ PASS (0 trailing whitespace or EOF formatting errors).
+
+#### 8. Visual Review Findings & UI Refinement Opportunities
+- **Aesthetic Direction:** The design achieves an editorial, high-end architectural feel using warm neutral backgrounds (`bg-stone-50`), deep charcoal typography (`text-slate-900`), subtle borders (`border-stone-200`), and warm amber accents, avoiding the look of a generic SaaS dashboard.
+- **Architectural Asset Representation:** The project showcase currently uses clean geometric blueprint SVG patterns as placeholders. Future UI refinement can introduce photorealistic 3D architectural renders or drone photography once marketing assets are supplied.
+- **Interactive Filtering:** With two active projects, a clean 2-column grid is visually balanced and clear. As project inventory grows, interactive filter tabs (e.g. by corridor: SG Highway vs. Shela, or configuration: 2 BHK vs. 3 BHK) can be incorporated.
+- **Typography & Spacing:** Visual hierarchy between primary display headings, editorial body copy, and metadata specification tags is balanced and readable across desktop and mobile viewports.
+
+#### 9. Security Boundary Defense
+- **Decoupling from Unauthenticated Endpoints:** As identified during the Milestone 4 independent security review, `/api/chat` currently relies on `conversationId` as a bearer capability token and lacks secure session binding. Connecting the public landing page directly to `/api/chat` prior to implementing signed buyer-session management would expose the chat API to unauthenticated, untrusted invocations.
+- **Staging Architecture:** In Phase 1, all buyer engagement triggers link strictly to visual anchor tags (`#concierge`, `#projects`). Zero network calls to `/api/chat` are dispatched from the client.
+- **Phase 2 Scope Lock:** Interactive chat, buyer lead creation, and signed session binding (e.g. HTTP-only signed cookies or tokens) will be implemented as an integrated security package in Milestone 5 Phase 2.
+
+#### 10. Remaining Execution Phases
+- **Milestone 5 Phase 2:** Interactive Buyer Concierge UI (minimalist mobile widget, signed buyer-session binding, language toggle EN/HI/GU, DPDP consent capture & opt-out, visual slot picker with independent server-side confirmation, dynamic handoff escalation banner).
+- **Milestone 6:** Sales Executive & Sales Head Portal (RBAC auth, Unified Lead List, Handoff Queue, Fact Sheet Approval Editor, Slot Manager).
+- **Milestone 7:** Source Attribution & ROI Dashboard + Complete Vitest Suite.
+- **Milestone 8:** Final Submission Packaging (`TDD.pdf`/`docx` + `deployment.md` zip `<25MB`, zero secrets).
+
+#### 11. Division of Responsibility & AI Collaboration
+- **Developer Contribution:** Approved Milestone 5 Phase 1 scope; mandated editorial residential aesthetic over generic SaaS dashboard styling; required live PostgreSQL data integration for project showcase; enforced Next.js 16 Cache Components migration rules; required statutory RERA disclaimer placement; directed strict security decoupling from `/api/chat`; and approved documentation updates.
+- **AI Assistance:** Implemented async Server Component (`src/app/page.tsx`), authored 6 modular buyer components with responsive Tailwind CSS v4 styling, resolved Next.js 16 `instant = false` build directive, cleaned ESLint props/imports, executed test suites and live curl smoke testing, and synchronized all project documentation.
+
+#### 12. Interview Preparation & Defense
+- **How to explain this in an interview:** *"In Milestone 5 Phase 1, we built the public residential property landing page for ENQUIVO. Rather than treating the frontend as an afterthought or rendering hardcoded static mockups, we architected the homepage as an async React Server Component in Next.js 16 App Router querying our live PostgreSQL database via Prisma. The page dynamically displays our two live Ahmedabad projects—Prakriti Heights and Vaastu Enclave—and grounds all portfolio highlights in verified database facts. To comply with Next.js 16's modern Cache Components architecture, we utilized `export const instant = false`, authorizing blocking server-side data fetching while cleanly compiling the route as dynamic server-rendered (`ƒ /`). From a security perspective, we strictly isolated the public landing page from our AI chat backend: because our M4 security review determined that `/api/chat` required secure buyer-session binding before public exposure, we intentionally decoupled the public UI from `/api/chat` in Phase 1, staging the concierge visually until signed session binding is implemented in Phase 2."*
+- **Likely Interview Question 1:** *Why did you query PostgreSQL directly inside the Server Component instead of creating a `/api/projects` REST endpoint and fetching it with `useEffect`?*
+- **Technical Answer:** *Direct database querying inside React Server Components provides three critical production advantages: First, it eliminates the client-side API waterfall and network latency—the server queries the co-located Neon database directly and streams fully formed HTML to the client, achieving faster First Contentful Paint (FCP) and Largest Contentful Paint (LCP). Second, it reduces client bundle size because neither client-side data fetching libraries (like SWR or React Query) nor database client code are shipped to the browser. Third, it prevents exposing internal REST endpoints or database structures to the public internet, reducing our attack surface.*
+- **Likely Interview Question 2:** *Why did you use `export const instant = false` instead of `export const dynamic = 'force-dynamic'` in Next.js 16?*
+- **Technical Answer:** *In Next.js 16 with `cacheComponents: true` and `partialPrefetching = true` enabled, legacy route segment configurations such as `dynamic = "force-dynamic"` and `revalidate = 60` are deprecated and rejected by the build compiler. Under Cache Components, Next.js expects data fetching to either be wrapped in explicit `"use cache"` boundaries or executed within an async component permitted to block. The `export const instant = false` directive explicitly informs the Next.js compiler that this page is authorized to perform blocking server-side runtime operations, allowing it to compile cleanly as a dynamic server-rendered page (`ƒ /`) without throwing uncached runtime prerender validation errors.*
+- **Key Engineering Trade-off:** Server-rendered Blueprint SVGs vs. External Image Hosting. For an assessment MVP, hosting external photographic assets on S3 or Cloudflare introduces third-party network dependencies, broken image links, and potential CORS issues. Rendering high-contrast geometric blueprint SVGs directly in code provides instant, deterministic, zero-latency visual hierarchy while maintaining a premium architectural aesthetic.
 
 ---
 

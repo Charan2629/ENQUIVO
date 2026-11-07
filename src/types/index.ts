@@ -35,6 +35,7 @@ export type {
   SiteVisit,
   ReminderJob,
   SourceSpend,
+  StaffSession,
 } from "@prisma/client";
 
 // ---------------------------------------------------------------------------

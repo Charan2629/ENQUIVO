@@ -11,7 +11,7 @@
 1. [Executive Summary](#1-executive-summary)
 2. [Architecture Overview](#2-architecture-overview)
 3. [Technology Stack](#3-technology-stack)
-4. [Database Schema — 13 Models](#4-database-schema--13-models)
+4. [Database Schema — 14 Models](#4-database-schema--14-models)
 5. [Timezone Strategy](#5-timezone-strategy)
 6. [Security Architecture](#6-security-architecture)
 7. [RERA & DPDP Compliance](#7-rera--dpdp-compliance)
@@ -116,25 +116,26 @@ ENQUIVO is a **modular monolith** built on Next.js 16 App Router. Business logic
 
 ---
 
-## 4. Database Schema — 13 Models
+## 4. Database Schema — 14 Models
 
-All 13 models are defined in `prisma/schema.prisma` targeting PostgreSQL (hosted on Neon) using Prisma 7.10.1 with `previewFeatures = ["partialIndexes"]`. *(Note: Neon assigns the label `[default] production` to the initial database branch, which currently serves as our baseline development and demonstration environment, distinct from a customer-facing live production deployment).*
+All 14 models are defined in `prisma/schema.prisma` targeting PostgreSQL (hosted on Neon) using Prisma 7.10.1 with `previewFeatures = ["partialIndexes"]`. *(Note: Neon assigns the label `[default] production` to the initial database branch, which currently serves as our baseline development and demonstration environment, distinct from a customer-facing live production deployment).*
 
 | # | Model | Key Fields & Constraints | Audit & Delete Policy |
 |---|---|---|---|
 | 1 | `User` | `id` (cuid), `email` (unique), `passwordHash`, `name`, `role` (`BUYER`, `SALES_EXEC`, `SALES_HEAD`) | Governs Fact Sheet creation/verification and handoff assignment. |
-| 2 | `Project` | `id`, `name`, `location`, `reraNumber` (`DEMO-ONLY-NOT-VERIFIED`), `totalUnits` (210 each) | Cascades to scoped FactSheets; referenced by Leads via `projectId` (SetNull). |
-| 3 | `FactSheet` | `id`, `key`, `value` (Text), `scope` (`PORTFOLIO`, `PROJECT_1`, `PROJECT_2`), `status` (`VERIFIED`, `DRAFT`, `UNVERIFIED`), `isActive` (Boolean, default: true) | Explicit relations: `createdBy` (Restrict), `verifiedBy` (SetNull). AI only retrieves `status = VERIFIED AND isActive = true`. |
-| 4 | `Lead` | `id`, `leadCode` (unique), `name`, `phone` (unique, nullable in DB for anonymisation, required by Zod on creation), `email`, `source` (immutable first-touch), `projectId` (FK, SetNull), `configuration`, `firstResponseAt`, `isAnonymized`, `deletedAt` | DPDP Soft-delete: phone set to NULL to prevent unique collisions across anonymised records; visits/attribution preserved for audit. Transcript/handoff PII redaction scheduled for M3/M4. |
-| 5 | `LeadSourceEvent` | `id`, `leadId`, `source`, `campaign`, `occurredAt` | Multi-touch attribution log. Retains full history when duplicate phone merges. Cascade on Lead. |
-| 6 | `ConsentRecord` | `id`, `leadId` (unique, 1:1), `consentText`, `consentedAt`, `optedOut`, `optOutAt` | DPDP Act 2023 explicit digital consent tracking and opt-out state. Cascade on Lead. |
-| 7 | `Conversation` | `id`, `leadId`, `language` (`EN`, `HI`, `GU`), `startedAt`, `endedAt` | Restrict deletion on Lead to preserve conversation audit history. |
-| 8 | `ChatMessage` | `id`, `conversationId`, `role` (`USER`, `AI`), `content` (Text), `groundingFactIds` (text[]) | Cascade on Conversation. Stores exact grounding fact IDs retrieved for each turn. |
-| 9 | `Handoff` | `id`, `conversationId` (unique, 1:1), `escalationReason`, `summary`, `status`, `assignedToId` | Escalation queue for Sales Execs. Assigned to User (SetNull). Cascade on Conversation. |
-| 10 | `VisitSlot` | `id`, `startsAt`, `endsAt`, `status` (`AVAILABLE`, `BOOKED`), `location` | Indexed on `[startsAt, status]`. Only future slots are released upon cancellation. |
-| 11 | `SiteVisit` | `id`, `slotId`, `leadId`, `bookingStatus` (`CONFIRMED`, `CANCELLED`, `COMPLETED`), `attendanceOutcome` (`UNRECORDED`, `ATTENDED`, `NO_SHOW`), `bookedAt`, `cancelledAt`, `attendedAt` | Restrict on slot and lead. Protected by partial unique index on active bookings. |
-| 12 | `ReminderJob` | `id`, `siteVisitId`, `reminderType` (`REMINDER_24H`, `REMINDER_2H`), `status` (`PENDING`, `PROCESSING`, `SENT`, `FAILED`), `idempotencyKey` (unique), `scheduledFor`, `simulationNote` | Idempotent background jobs with bounded retry (`maxAttempts = 3`). Cascade on SiteVisit. |
-| 13 | `SourceSpend` | `id`, `source`, `monthYear`, `amountPaise` (BigInt), `note` | Unique `[source, monthYear]`. Currency stored in paise to eliminate floating-point drift. |
+| 2 | `StaffSession` | `id` (cuid), `userId` (FK), `tokenHash` (SHA-256 unique), `expiresAt`, `revokedAt`, `createdAt` | Serverless persistent session tracking and instant global revocation across lambdas. Cascade on User. |
+| 3 | `Project` | `id`, `name`, `location`, `reraNumber` (`DEMO-ONLY-NOT-VERIFIED`), `totalUnits` (210 each) | Cascades to scoped FactSheets; referenced by Leads via `projectId` (SetNull). |
+| 4 | `FactSheet` | `id`, `key`, `value` (Text), `scope` (`PORTFOLIO`, `PROJECT_1`, `PROJECT_2`), `status` (`VERIFIED`, `DRAFT`, `UNVERIFIED`), `isActive` (Boolean, default: true) | Explicit relations: `createdBy` (Restrict), `verifiedBy` (SetNull). AI only retrieves `status = VERIFIED AND isActive = true`. |
+| 5 | `Lead` | `id`, `leadCode` (unique), `name`, `phone` (unique, nullable in DB for anonymisation, required by Zod on creation), `email`, `source` (immutable first-touch), `projectId` (FK, SetNull), `configuration`, `firstResponseAt`, `isAnonymized`, `deletedAt` | DPDP Soft-delete: phone set to NULL to prevent unique collisions across anonymised records; visits/attribution preserved for audit. Transcript/handoff PII redaction scheduled for M3/M4. |
+| 6 | `LeadSourceEvent` | `id`, `leadId`, `source`, `campaign`, `occurredAt` | Multi-touch attribution log. Retains full history when duplicate phone merges. Cascade on Lead. |
+| 7 | `ConsentRecord` | `id`, `leadId` (unique, 1:1), `consentText`, `consentedAt`, `optedOut`, `optOutAt` | DPDP Act 2023 explicit digital consent tracking and opt-out state. Cascade on Lead. |
+| 8 | `Conversation` | `id`, `leadId`, `language` (`EN`, `HI`, `GU`), `startedAt`, `endedAt` | Restrict deletion on Lead to preserve conversation audit history. |
+| 9 | `ChatMessage` | `id`, `conversationId`, `role` (`USER`, `AI`), `content` (Text), `groundingFactIds` (text[]) | Cascade on Conversation. Stores exact grounding fact IDs retrieved for each turn. |
+| 10 | `Handoff` | `id`, `conversationId` (unique, 1:1), `escalationReason`, `summary`, `status`, `assignedToId` | Escalation queue for Sales Execs. Assigned to User (SetNull). Cascade on Conversation. |
+| 11 | `VisitSlot` | `id`, `startsAt`, `endsAt`, `status` (`AVAILABLE`, `BOOKED`), `location` | Indexed on `[startsAt, status]`. Only future slots are released upon cancellation. |
+| 12 | `SiteVisit` | `id`, `slotId`, `leadId`, `bookingStatus` (`CONFIRMED`, `CANCELLED`, `COMPLETED`), `attendanceOutcome` (`UNRECORDED`, `ATTENDED`, `NO_SHOW`), `bookedAt`, `cancelledAt`, `attendedAt` | Restrict on slot and lead. Protected by partial unique index on active bookings. |
+| 13 | `ReminderJob` | `id`, `siteVisitId`, `reminderType` (`REMINDER_24H`, `REMINDER_2H`), `status` (`PENDING`, `PROCESSING`, `SENT`, `FAILED`), `idempotencyKey` (unique), `scheduledFor`, `simulationNote` | Idempotent background jobs with bounded retry (`maxAttempts = 3`). Cascade on SiteVisit. |
+| 14 | `SourceSpend` | `id`, `source`, `monthYear`, `amountPaise` (BigInt), `note` | Unique `[source, monthYear]`. Currency stored in paise to eliminate floating-point drift. |
 
 ### Partial Unique Index (Concurrency Defense)
 
@@ -174,9 +175,10 @@ CREATE UNIQUE INDEX "one_active_booking_per_slot"
 ## 6. Security Architecture
 
 ### Authentication
-- Auth.js v5 with Prisma adapter manages sessions
-- Passwords hashed with **Argon2id** (memory-hard; resistant to GPU brute-force)
-- Sessions stored as secure, HTTP-only cookies — never accessible to client-side JavaScript
+- **Buyer Sessions:** Signed HMAC-SHA256 HTTP-only cookies (`eq_buyer_session`) bound to explicit DPDP Act 2023 consent, non-destructive lead deduplication, and server-derived conversation identity.
+- **Staff Authentication:** Argon2id password hashing via `@node-rs/argon2` (memory-hard; resistant to GPU brute-force). Issued sessions are signed HMAC-SHA256 tokens stored in secure, HTTP-only cookies (`eq_staff_session`, SameSite=Lax, Secure in production).
+- **Persistent Serverless Session Revocation & Two-Layer Defense:** In serverless architectures (Next.js on Vercel), in-memory revocation registries fail due to isolated memory per lambda instance and cold restarts. The authentication system uses a hardened two-layer defense: the browser cookie is an HTTP-only bearer credential containing a 32-byte cryptographically secure random `rawToken` inside an HMAC-SHA256 signed envelope. PostgreSQL stores only the deterministic one-way `SHA-256(rawToken)` (`StaffSession` model, `tokenHash`). On every protected request, the server verifies the HMAC signature first, extracts `rawToken`, computes `SHA-256(rawToken)` on the fly, and queries PostgreSQL to verify the session exists, is not revoked (`revokedAt IS NULL`), and has not expired. On logout, `revokedAt = NOW()` is recorded in PostgreSQL. This guarantees instant global session revocation across serverless instances and ensures that a database read leak does not expose valid bearer session credentials.
+- **Live Account Revalidation:** Every protected staff request executes a live database query (`findUnique` on `StaffSession` including `user`), asserting that: (1) the session is not revoked in PostgreSQL, (2) the session has not expired (application check comparing `new Date() > persistedSession.expiresAt`), (3) the user account exists in PostgreSQL, and (4) the user's live database role matches the session claim and has authorized staff privileges (`SALES_HEAD` or `SALES_EXEC`). Note that `User` does not currently contain an explicit `isActive` column; account suspension is enforced either by demoting the role to `BUYER` or deleting the user (which cascades to delete all `StaffSession` records).
 
 ### Role-Based Access Control (RBAC)
 - Enforced server-side in every Route Handler and Service method
@@ -449,6 +451,9 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 | D-022 | 2026-11-06 | Decoupled direct human handoff endpoint for zero-LLM-dependency escalation (`POST /api/chat/handoff`) | Guarantees that buyers can connect with a sales executive even during upstream AI provider outages (503/429/timeouts). Queries an active `SALES_EXEC` from PostgreSQL, creates or reuses `Handoff`, persists a localized system confirmation message, and sets `firstResponseAt` without invoking Gemini | Routing human requests through Gemini prompt — rejected (fails when Gemini is down with 503 or quota limits); Client-side direct DB updates — rejected (violates modular monolith architecture and security rules) |
 | D-023 | 2026-11-06 | Standardized cross-site request forgery (CSRF) & same-origin enforcement (`src/lib/security.ts`) | Centralizes browser security checks across all state-changing API endpoints (`/api/chat`, `/api/chat/handoff`, `/api/chat/session`, `/api/chat/session/opt-out`). Enforces `Sec-Fetch-Site: cross-site` rejection, `Origin` vs `Host`/`X-Forwarded-Host` validation, and fallback to `Referer` validation | Inline repetitive origin checks — rejected (inconsistent security coverage); Relying solely on SameSite cookies — rejected (defense-in-depth requires explicit server-side origin verification) |
 | D-024 | 2026-11-06 | Gemini 3.8 Flash transition, SDK bounded backoff with jitter, and sanitized error telemetry | Upgraded deprecated model identifier to stable `gemini-3.8-flash`. Configured native `@google/genai` HTTP-level exponential backoff (`attempts: 3`, initial delay 1.0s, max delay 4.0s, jitter 0.5 on 429/503/504) to avoid nested retry loops. Classifies errors via `classifyGeminiError` and returns sanitized, friendly messages to the client with working retry actions, never exposing raw JSON, stack traces, or API keys | Nested retry loops inside service code — rejected (causes exponential retry storms); Exposing raw Gemini error responses — rejected (risks leaking internal paths and credentials); Suppressing errors without retry UI — rejected (poor buyer experience) |
+| D-025 | 2026-11-07 | Argon2id Staff Authentication and PostgreSQL Live Role Revalidation (`StaffAuthService`, `src/lib/auth-guard.ts`) | Implements production-grade credential security without shared passwords or placeholder hashes. Staff credentials are verified via Argon2id (`@node-rs/argon2`). Issued session tokens are signed HMAC-SHA256 strings stored in HTTP-only cookies (`eq_staff_session`, 12h duration, SameSite=Lax, Secure in production). Crucially, during every protected staff request or navigation, the server guard (`requireStaffSession` / `requireStaffRole`) revalidates the user account against live PostgreSQL (`prisma.user.findUnique`), ensuring deactivated users, deleted accounts, or demoted roles (`BUYER`) are rejected immediately, eliminating stale-token privilege escalation | Client-side-only role checks — rejected (vulnerable to IDOR and cookie forgery); Shared demo passwords — rejected (insecure and violates auditability); Relying on token payload role without DB lookup — rejected (demoted/terminated users retain access until token expiry) |
+| D-026 | 2026-11-07 | Brute-Force Login Throttling and Same-Origin CSRF Defense on Staff Authentication Endpoints (`POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/auth/session`) | Prevents credential stuffing by tracking failed login attempts per client IP and email. Exceeding 5 failed attempts within 15 minutes triggers a 429 Too Many Requests response with `Retry-After` header. State-changing auth endpoints enforce `verifySameOrigin` CSRF protection | Unbounded login attempts — rejected (vulnerable to brute-force credential stuffing); Permanent account lockout — rejected (enables denial-of-service on legitimate staff accounts) |
+| D-027 | 2026-11-07 | Persistent Serverless Staff Session Revocation via PostgreSQL `StaffSession` Records & Two-Layer Token Architecture | In serverless hosting (Vercel), in-memory session revocation registries fail because separate serverless functions run in isolated memory spaces, and container cold starts purge in-memory maps. To guarantee immediate, global session revocation on logout while defending against database-only leaks, `StaffAuthService` generates a 32-byte random `rawToken`, computes its deterministic SHA-256 hash (`tokenHash`), and stores ONLY `tokenHash` in the PostgreSQL `staff_sessions` table. The client cookie (`eq_staff_session`) receives an HMAC-SHA256 signed envelope containing `rawToken`, completely concealing `tokenHash` from the browser. On every request, `verifySessionAndFetchUser` verifies the HMAC signature first, hashes `rawToken` on the fly, and verifies the session in PostgreSQL (`revokedAt IS NULL`, `expiresAt > NOW()`, live role match). This achieves instant, serverless revocation, tamper resistance, and database breach protection without requiring Redis | In-memory revocation Map — rejected (fails across multiple serverless lambda instances and cold restarts); Exposing tokenHash in client cookie — rejected (unnecessary exposure of database primary lookup key); Storing raw tokens in database — rejected (unnecessary security risk if database read replicas are inspected; SHA-256 tokenHash is one-way deterministic); External Redis cluster — rejected (violates architecture rule against adding unnecessary infrastructure) |
 
 ---
 
@@ -477,8 +482,12 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 | M2 | Prisma Schema (13 models + partial unique index), Neon Migration & Guarded Seed | ✅ Complete | `2e3bd3c` |
 | M3 | Core Backend Services (LeadService, BookingService, ReminderService) & Integration Tests | ✅ Complete | `cdb8f14` |
 | M4 | AIConciergeService (EN/HI/GU, VERIFIED-only facts, Zod tool calling, handoff) | ✅ Complete | `1e9831e` (local) |
-| M5 | Buyer Concierge Experience (Landing Page + Secure Mobile Concierge UI & Functional AI) | ✅ Complete | Pending commit |
-| M6 | Sales Executive & Sales Head Portal (RBAC auth, Lead List, Handoff Queue, Fact Sheet Editor, Slot Manager) | ⬜ Pending | — |
+| M5 | Buyer Concierge Experience (Landing Page + Secure Mobile Concierge UI & Functional AI) | ✅ Complete | `27d0d8d` |
+| M6 Phase 1 | Staff Authentication & Operations Portal Shell (Argon2id, DB role revalidation, login throttling, CSRF, layout) | ✅ Complete | Pending commit |
+| M6 Phase 2 | Lead Pipeline & Ingestion Interface | ⬜ Next | — |
+| M6 Phase 3 | Salesperson Assignment & Handoff Management Queue | ⬜ Pending | — |
+| M6 Phase 4 | Site Visits, Attendance Management & Fact Sheet Administration | ⬜ Pending | — |
+| M6 Phase 5 | Source Analytics, E2E QA, and Integration Review | ⬜ Pending | — |
 | M7 | Source Attribution & ROI Dashboard + Complete Vitest Suite | ⬜ Pending | — |
 | M8 | Final Submission Packaging (TDD.pdf + deployment.md zip, <25MB, zero secrets) | ⬜ Pending | — |
 

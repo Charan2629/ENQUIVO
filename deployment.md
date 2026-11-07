@@ -110,8 +110,8 @@ npx prisma validate
 # Generate Prisma Client (offline)
 npx prisma generate
 
-# Create and apply initial migration to PostgreSQL
-npx prisma migrate dev --name init
+# Apply pending database migrations to PostgreSQL
+npx prisma migrate deploy
 
 # Seed the database with date-aware fixture data
 npx prisma db seed
@@ -123,6 +123,22 @@ npx prisma migrate reset
 # Open Prisma Studio (visual DB browser)
 npx prisma studio
 ```
+
+### Seeded Synthetic Evaluator Accounts & Credentials (Demo Environment Only)
+
+The seed script (`npx prisma db seed`) populates synthetic evaluator demonstration accounts with production-grade Argon2id password hashes. **These accounts and passwords are for assessment demonstration only and must never be used in a production environment.**
+
+| Role | Staff Member | Email | Password | Access Level |
+|---|---|---|---|---|
+| `SALES_HEAD` | Aarav Sharma | `sales-head@enquivo.in` | `DemoEval#Head2026!` | Full Admin: Fact Sheet Governance, Leads, Handoffs, Visits, Source Analytics |
+| `SALES_EXEC` | Vikram Mehta | `vikram.mehta@enquivo.in` | `DemoEval#ExecVikram2026!` | Sales Executive: Leads, Handoffs, Visits, Source Analytics |
+| `SALES_EXEC` | Priya Desai | `priya.desai@enquivo.in` | `DemoEval#ExecPriya2026!` | Sales Executive: Leads, Handoffs, Visits, Source Analytics |
+
+To access the staff operations portal:
+1. Navigate to `/login` in your browser.
+2. Sign in with any of the synthetic accounts above (in development mode or with `NEXT_PUBLIC_ENABLE_DEMO_LOGINS=true`, convenient one-click autofill buttons are rendered). In production environments, autofill is completely disabled.
+3. Authenticated sessions issue an HTTP-only `eq_staff_session` bearer cookie valid for 12 hours (embedding `rawToken` in an HMAC-signed envelope) with persistent PostgreSQL revocation tracking (`StaffSession` model, migration `20261107065456_add_staff_sessions`, storing only `tokenHash = SHA-256(rawToken)`) upon logout.
+4. Database role revalidation ensures that deleted accounts, demoted roles, or revoked tokens are rejected immediately on every request.
 
 ### PostgreSQL Partial Unique Index Verification
 

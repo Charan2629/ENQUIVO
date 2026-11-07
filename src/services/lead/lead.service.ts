@@ -80,12 +80,22 @@ export class LeadService {
             : String(error.meta?.target ?? "");
 
           // Case A: Phone collision (a concurrent request won the insertion race)
-          if (target.includes("phone")) {
+          if (target.includes("phone") || error.message.includes("leads_phone_key")) {
             // Note: Transaction 1 has rolled back and is aborted.
             // Query the winning active lead outside the dead transaction using this.db.
-            const winningLead = await this.db.lead.findFirst({
+            let winningLead = await this.db.lead.findFirst({
               where: { phone: normalizedPhone, deletedAt: null },
             });
+
+            // If the winning concurrent transaction is still finalizing its commit, retry lookup with backoff
+            if (!winningLead) {
+              for (let retry = 0; retry < 5 && !winningLead; retry++) {
+                await new Promise((resolve) => setTimeout(resolve, 100));
+                winningLead = await this.db.lead.findFirst({
+                  where: { phone: normalizedPhone, deletedAt: null },
+                });
+              }
+            }
 
             if (winningLead) {
               // Open a fresh, independent transaction to perform conditional enrichment and append the touchpoint

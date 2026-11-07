@@ -23,6 +23,7 @@
  */
 
 import "dotenv/config";
+import { hash } from "@node-rs/argon2";
 import type { PrismaClient } from "@prisma/client";
 import {
   UserRole,
@@ -83,15 +84,23 @@ async function runSeed() {
       await tx.lead.deleteMany();
       await tx.factSheet.deleteMany();
       await tx.project.deleteMany();
+      await tx.staffSession.deleteMany();
       await tx.user.deleteMany();
 
-      // Step B: Seed Users with explicitly labeled development placeholder hashes
-      console.log("👤 [Transaction] Seeding Users (Sales Head, Sales Execs, Buyer)...");
+      // Step B: Seed Users with production-grade Argon2id password hashes (Synthetic Demo Evaluators)
+      console.log("👤 [Transaction] Seeding Synthetic Evaluator Users with Argon2id credentials...");
+      console.log("ℹ️ [Transaction] Seeding synthetic evaluator demo accounts. These credentials must never be reused in production.");
+
+      const salesHeadHash = await hash(process.env.SEED_SALES_HEAD_PASSWORD || "DemoEval#Head2026!");
+      const salesExec1Hash = await hash(process.env.SEED_SALES_EXEC1_PASSWORD || "DemoEval#ExecVikram2026!");
+      const salesExec2Hash = await hash(process.env.SEED_SALES_EXEC2_PASSWORD || "DemoEval#ExecPriya2026!");
+      const buyerHash = await hash(process.env.SEED_BUYER_PASSWORD || "DemoEval#BuyerHardik2026!");
+
       const salesHead = await tx.user.create({
         data: {
           email: "sales-head@enquivo.in",
           name: "Aarav Sharma",
-          passwordHash: "argon2id$development-placeholder-not-for-production$saleshead",
+          passwordHash: salesHeadHash,
           role: UserRole.SALES_HEAD,
         },
       });
@@ -100,7 +109,7 @@ async function runSeed() {
         data: {
           email: "vikram.mehta@enquivo.in",
           name: "Vikram Mehta",
-          passwordHash: "argon2id$development-placeholder-not-for-production$exec1",
+          passwordHash: salesExec1Hash,
           role: UserRole.SALES_EXEC,
         },
       });
@@ -109,7 +118,7 @@ async function runSeed() {
         data: {
           email: "priya.desai@enquivo.in",
           name: "Priya Desai",
-          passwordHash: "argon2id$development-placeholder-not-for-production$exec2",
+          passwordHash: salesExec2Hash,
           role: UserRole.SALES_EXEC,
         },
       });
@@ -118,7 +127,7 @@ async function runSeed() {
         data: {
           email: "hardik.patel@example.com",
           name: "Hardik Patel",
-          passwordHash: "argon2id$development-placeholder-not-for-production$buyer",
+          passwordHash: buyerHash,
           role: UserRole.BUYER,
         },
       });

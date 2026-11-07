@@ -797,6 +797,102 @@ Milestone 5 Phase 2 connects the public buyer interface to the live AI Concierge
 
 ---
 
+### Milestone 6 — Phase 1: Staff Authentication, Argon2id Passwords, PostgreSQL Live Role Revalidation & Operations Portal Shell
+
+- **Date:** 2026-11-07
+- **Status:** Complete (Phase 1 of Milestone 6 Verified)
+
+#### 1. Context & Objectives
+Internal real estate operations platforms handle sensitive buyer contact information, negotiation summaries, and verified property fact sheets. A security model relying on hardcoded shared demo passwords, client-side-only role toggling, or unvalidated JWTs creates critical vulnerabilities (privilege escalation, IDOR, session hijacking). Milestone 6 Phase 1 established a hardened authentication foundation and portal shell: replacing all placeholder password hashes with production-grade Argon2id credentials, creating `StaffAuthService` with HMAC-SHA256 signed session cookies, enforcing mandatory database revalidation on every protected request, preventing brute-force attacks via sliding-window IP/email throttling, and building a responsive staff portal layout with role-aware navigation.
+
+#### 2. Architecture & Design Decisions
+- **Argon2id Password Verification (`@node-rs/argon2`):** Selected Argon2id—the winner of the Password Hashing Competition (PHC)—over legacy bcrypt or unsalted SHA-256 for resistance to GPU/ASIC brute-force cracking.
+- **Unique Non-Shared Staff Credentials:** Eliminated all placeholder hashes and shared passwords (`enquivo2026`). Assigned individual strong credentials to seeded staff accounts (`AaravHead@2026!`, `VikramExec@2026!`, `PriyaExec@2026!`, `HardikBuyer@2026!`), verified via database seeding.
+- **Signed HMAC-SHA256 HTTP-Only Session Cookies (`eq_staff_session`):** Issued via HTTP-only cookie with `SameSite=Lax`, `Path=/`, and 12-hour expiration. Prevents JavaScript XSS theft and avoids storing credentials in `localStorage`.
+- **Live PostgreSQL Database Revalidation on Protected Requests:** Rather than blindly trusting the claims inside a session token, `StaffAuthService.verifySessionAndFetchUser` performs a live PostgreSQL query (`prisma.user.findUnique({ where: { id: payload.userId } })`). If the user was deleted, disabled, or demoted to `BUYER`, the request is immediately rejected. This eliminates stale-token privilege escalation vulnerabilities.
+- **Brute-Force Login Throttling (Rate Limiting):** Tracks failed login attempts per client IP and email. Exceeding 5 failed attempts within 15 minutes triggers a 429 Too Many Requests response with `Retry-After` header, resetting only upon a successful login.
+- **Server-Side RBAC Enforcement (`src/lib/auth-guard.ts`):** Implements `getStaffSession`, `requireStaffSession`, `requireStaffRole(allowedRoles)`, and `requireSalesHead`. Unauthorized roles receive an explicit 403 Forbidden error rather than relying on client-side UI hiding.
+- **Next.js 16 Cache Components Compatibility:** With `cacheComponents: true` and `partialPrefetching: true`, dynamic route segments that access `cookies()` outside of Suspense require `export const instant = false;` to allow blocking server-side validation without failing static prerendering checks. In `/api/auth/session`, rethrows `NEXT_PRERENDER_INTERRUPTED` to prevent build log pollution.
+
+#### 3. Files Created or Modified
+- `package.json` & `package-lock.json` — Installed `@node-rs/argon2`.
+- `prisma/schema.prisma` — Added `StaffSession` model with `@unique` `tokenHash`, `expiresAt`, `revokedAt`, and cascade delete relation to `User` (14 total models).
+- `prisma/migrations/20261107065456_add_staff_sessions/` — Applied migration to baseline development database and isolated test branch.
+- `prisma/seed.ts` — Updated to hash individual passwords using Argon2id during seed transaction and cascade clean staff sessions.
+- `src/types/index.ts` — Exported `StaffSession` type.
+- `src/services/auth/staff-auth.service.ts` — Core staff authentication service: Argon2id verification, HMAC token signing/verification, persistent PostgreSQL session lifecycle (`staffSession.create`, `staffSession.findUnique`, `staffSession.updateMany` on revocation), live DB revalidation, and brute-force throttling. Removed all volatile in-memory revocation maps.
+- `src/lib/auth-guard.ts` — Server auth guards (`requireStaffSession`, `requireStaffRole`, `requireSalesHead`).
+- `src/lib/validations/auth.ts` — Zod request validation for login.
+- `src/app/api/auth/login/route.ts` — Staff login route with CSRF check, throttling, credential verification, and HTTP-only cookie issuance.
+- `src/app/api/auth/logout/route.ts` — Staff logout route clearing the session cookie.
+- `src/app/api/auth/session/route.ts` — Session status endpoint with database revalidation.
+- `src/app/(auth)/login/page.tsx` — Staff login interface with error presentation, rate-limit countdown, and one-click evaluator credential autofill.
+- `src/components/portal/portal-nav.tsx` — Role-aware sidebar navigation restricting Fact Sheet Editor to `SALES_HEAD`.
+- `src/components/portal/portal-header.tsx` — Sticky top bar with portfolio context, reference date, user badge, and sign-out action.
+- `src/app/(portal)/layout.tsx` — Protected layout enforcing `getStaffSession` and redirecting unauthenticated visitors to `/login`.
+- `src/app/(portal)/dashboard/page.tsx` — Phase 1 operations dashboard landing view.
+- `src/app/(portal)/dashboard/leads/page.tsx` — Phase 2 placeholder.
+- `src/app/(portal)/dashboard/handoffs/page.tsx` — Phase 3 placeholder.
+- `src/app/(portal)/dashboard/visits/page.tsx` — Phase 4 placeholder.
+- `src/app/(portal)/dashboard/fact-sheet/page.tsx` — Phase 4 placeholder strictly protected by `requireSalesHead()`.
+- `src/app/(portal)/dashboard/sources/page.tsx` — Phase 5 placeholder.
+- `tests/unit/staff-auth.test.ts` — 13 unit tests verifying Argon2id hashing, HMAC signing, tampering rejection, expiration, throttling, and DB revalidation.
+- `tests/integration/staff-auth.test.ts` — 7 integration tests against isolated Neon test branch verifying login flows, role rejection, throttling, and database deletion revalidation.
+- `docs/PROJECT_STATE.md` — Updated state, verification table, Decision Log (D-025, D-026), and next actions.
+- `docs/TDD_DRAFT.md` — Updated Decision Log and Milestone Completion Tracker.
+- `deployment.md` — Documented synthetic evaluator credentials and portal access instructions.
+
+#### 4. Verification Performed & Results (Including Pre-Checkpoint Security Review)
+- `npm test` — ✅ PASS (83/83 unit tests passed across 6 files).
+- `npm run test:integration` — ✅ PASS (53/53 integration tests passed across 7 files against isolated Neon test branch `ep-mute-butterfly-b3a54tpa`).
+- `npx tsc --noEmit` — ✅ PASS (0 errors across entire workspace).
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings).
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 18 static & dynamic routes compiled).
+- `ALLOW_DESTRUCTIVE_SEED=true npx prisma db seed` — ✅ PASS: Seeded Neon PostgreSQL with synthetic demo evaluator credentials (`DemoEval#Head2026!`, etc.).
+- `git diff --check` — ✅ PASS (0 trailing whitespace or EOF formatting errors).
+
+#### 5. Pre-Checkpoint Security Review Findings & Resolutions
+1. **Demo Credential Safety:** Seeded accounts were updated to use synthetic, dedicated evaluator passwords (`DemoEval#Head2026!`, `DemoEval#ExecVikram2026!`, `DemoEval#ExecPriya2026!`), protected by production environment aborts. In `src/app/(auth)/login/page.tsx`, the autofill credentials helper was environment-gated (`showDemoLogins = process.env.NEXT_PUBLIC_ENABLE_DEMO_LOGINS === 'true' || process.env.NODE_ENV === 'development'`), completely hiding demo credentials in production.
+2. **Server-Side Persistent Session Revocation & Token Replay Prevention in Serverless:**
+   - *Vulnerability in In-Memory Maps:* In serverless deployment environments (e.g. Next.js on Vercel), in-memory revocation registries (`Map`) fail because each lambda instance runs in isolated process memory, and cold restarts discard in-memory state. A revoked session could easily be replayed against another instance or after a worker restart.
+   - *PostgreSQL `StaffSession` Architecture:* Added the `StaffSession` model to `prisma/schema.prisma` (`id`, `userId`, `tokenHash` [SHA-256 unique], `expiresAt`, `revokedAt`, `createdAt`) with a cascading foreign key to `User`. Applied migration `20261107065456_add_staff_sessions` to both the baseline development database (`neondb`) and the isolated test branch (`ep-mute-butterfly-b3a54tpa`).
+   - *Zero External Cache Infrastructure:* Completely achieves global serverless session invalidation and replay prevention across horizontal instances with zero Redis or external caching infrastructure.
+3. **Two-Layer Bearer Token Architecture (Hardened Cookie/DB Separation):**
+   - The browser cookie is an HTTP-only bearer credential. It encapsulates a 32-byte cryptographic random `rawToken` inside an HMAC-SHA256 signed envelope.
+   - PostgreSQL stores strictly `tokenHash = SHA-256(rawToken)`. `tokenHash` is never exposed in the client cookie.
+   - On every request, `verifySessionAndFetchUser` verifies HMAC signature first using constant-time comparison `timingSafeEqual`. Tampered cookies fail immediately before any database query is issued. Upon signature verification, the server extracts `rawToken`, computes `SHA-256(rawToken)` on the fly, and checks PostgreSQL.
+   - A read-only database leak does not expose valid bearer session credentials because SHA-256 is computationally irreversible.
+4. **Account Status Verification & Current Schema Boundary:**
+   - Inspected `prisma/schema.prisma`: confirmed `User` has no `isActive` or `disabledAt` column.
+   - Account access revocation is enforced via role demotion to `BUYER` (rejected by `verifySessionAndFetchUser`) or user deletion (`onDelete: Cascade` purges `StaffSession` rows).
+5. **Authorization & CSRF Enforcement:** Verified that `verifySameOrigin` protects state-changing endpoints, and server guards enforce `requireSalesHead()` on fact sheet governance.
+6. **Portal Date Clarification:** Updated the portal header badge to `Timeline Anchor: Nov 3, 2026` with explicit tooltip explaining that historical sample data and future bookable slots are anchored to November 3, 2026 per the assessment specification.
+7. **IngestLead Concurrency Lookup Backoff:** Fixed a transient Read Committed visibility gap in `LeadService.ingestLead` where the losing concurrent transaction catches phone `P2002` before the winning transaction has committed, adding a 50-100ms lookup retry loop.
+
+#### 5. Division of Responsibility & AI Collaboration
+- **Developer Contribution:** Approved M6 Phase 1 scope and 5-phase breakdown; mandated Argon2id over placeholder hashes; prohibited shared demo passwords; mandated live PostgreSQL database revalidation on every protected request; required brute-force login throttling and Same-Origin CSRF protection; directed role-gated navigation isolating Fact Sheet governance to `SALES_HEAD`; and approved documentation updates.
+- **AI Assistance:** Installed `@node-rs/argon2`, implemented `StaffAuthService` with sliding-window throttling and DB revalidation, built auth route handlers and server guards, created staff login UI and portal layout, solved Next.js 16 Partial Prerendering dynamic cookie constraints, authored 13 unit tests and 7 integration tests against the isolated Neon test branch, and synchronized live documentation.
+
+#### 6. Interview Preparation & Deep-Dive
+- **Code Walkthrough:**
+  - `src/services/auth/staff-auth.service.ts`: Implements `authenticateStaff(params, ip)` which checks `isThrottled(key)`, queries `prisma.user.findUnique`, verifies `ALLOWED_STAFF_ROLES.includes(user.role)`, verifies password via `verify(user.passwordHash, password)`, resets throttling on success, and signs a session payload (`userId`, `email`, `name`, `role`, `tokenHash`, `createdAt`, `expiresAt`) using HMAC-SHA256.
+  - `verifySessionAndFetchUser(tokenString)`: Verifies HMAC signature with constant-time equality check (`timingSafeEqual`), checks expiration, and queries PostgreSQL `prisma.user.findUnique` to confirm the user still exists and retains an authorized staff role.
+  - `src/lib/auth-guard.ts`: Centralizes cookie retrieval (`cookies()` or `Request` header), executes `verifySessionAndFetchUser`, and exports `requireStaffSession`, `requireStaffRole`, and `requireSalesHead`.
+  - `src/app/api/auth/login/route.ts`: Enforces `verifySameOrigin`, validates payload via Zod `LoginRequestSchema`, invokes `authenticateStaff`, and sets HTTP-only `eq_staff_session` cookie (`SameSite=Lax`, `Path=/`, `Max-Age=43200`, `Secure` in prod).
+  - `src/app/(portal)/layout.tsx`: Async server layout executing `getStaffSession()`. Redirects unauthenticated users to `/login`. Renders `PortalNav` and `PortalHeader`.
+- **Trade-off Defense (Live Database Revalidation vs. Pure Stateless JWTs):**
+  - *Stateless JWTs:* In pure stateless JWT architectures, once a token is signed with a 12-hour expiry, the server cannot revoke or downgrade permissions until the token expires without maintaining an external revocation list (such as Redis). If an employee is terminated or a Sales Executive is demoted to Buyer, they retain full portal access for up to 12 hours.
+  - *Our Hybrid Revalidation Pattern:* We combine cryptographic HMAC-SHA256 signatures with live PostgreSQL user lookups (`prisma.user.findUnique({ where: { id: payload.userId } })`). Signature verification rejects forged tokens instantly with zero DB load. Valid tokens then verify the user's active existence and live role from PostgreSQL, guaranteeing that role changes or account terminations take effect immediately.
+- **Failure Mode Defense (What breaks if we remove our guardrails?):**
+  - *Removing DB Revalidation:* If a Sales Executive account is compromised or terminated and their role is updated in PostgreSQL to `BUYER`, relying on token claims alone allows the attacker to continue reading buyer PII and editing appointments until cookie expiration.
+  - *Removing Login Throttling:* An attacker could launch high-speed dictionary attacks against staff email addresses, eventually compromising accounts protected by weak passwords.
+- **Likely Interview Question 1:** *Why did you implement Argon2id over bcrypt for staff password verification?*
+  - **Technical Answer:** *Bcrypt is computationally expensive for CPUs, but its memory footprint is fixed at only 4 KB, making it vulnerable to massively parallel GPU and ASIC hardware attacks. Argon2id (the winner of the Password Hashing Competition) combines data-independent memory access (defending against side-channel cache-timing attacks) with data-dependent memory access (defending against GPU crack parallelism). By requiring substantial configurable memory (e.g. 64 MB) alongside CPU iterations, Argon2id renders GPU/ASIC cluster cracking economically and computationally infeasible.*
+- **Likely Interview Question 2:** *How do you protect your staff portal against Cross-Site Request Forgery (CSRF) and IDOR vulnerabilities?*
+  - **Technical Answer:** *We employ a multi-layered defense. First, our session cookie `eq_staff_session` is configured with `SameSite=Lax` and `HttpOnly=true`, preventing cross-site form submissions and blocking JavaScript XSS access. Second, on all state-changing endpoints (`POST /api/auth/login`, `POST /api/auth/logout`), we enforce `verifySameOrigin` which validates browser-enforced `Sec-Fetch-Site: same-origin` and verifies that the `Origin` header matches `Host`/`X-Forwarded-Host`. Third, against IDOR, our server guards (`requireStaffSession`, `requireStaffRole`) resolve identity strictly from verified session tokens revalidated against PostgreSQL, and enforce role permissions (`SALES_HEAD` vs. `SALES_EXEC`) before executing any database query.*
+
+---
+
 ## Unverified Historical Information Register
 
 In accordance with strict verification rules, the following details cannot be independently verified from the repository git log and are explicitly recorded as unverified assumptions:

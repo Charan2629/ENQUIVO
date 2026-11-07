@@ -63,7 +63,7 @@ The client brief requires a reliable, performant, and compliant lead-response an
 - **How to explain this in an interview:** *"In Milestone 1, we established a modular monolith architecture on Next.js 16 App Router. We isolated our application into three distinct route groups—buyer mobile interface, sales portal, and authentication—sharing a unified domain service layer. Before writing code, we locked our architectural decisions in a formal TDD with a Decision Log and Assumptions Register to ensure team alignment and compliance with Ahmedabad real estate requirements."*
 - **Likely Interview Question:** *Why did you choose a modular monolith instead of microservices for a multi-role real estate application?*
 - **Technical Answer:** *For ENQUIVO's scope, microservices would introduce distributed transaction overhead, network serialization latency, and operational deployment complexity without business justification. By organizing our code as a modular monolith—with strict boundaries between independent service modules under `src/services/` and thin API route handlers—we achieve high cohesion and testability while maintaining single-command deployment on Vercel. If a specific service like reminder scheduling needs independent scaling in the future, it can be extracted cleanly.*
-- **Key Engineering Trade-off:** Next.js Route Groups vs. Subdomains. Subdomains require multi-tenant DNS routing and cookie domain sharing; route groups achieve identical layout isolation in a single domain with zero DNS configuration.
+- **Key Engineering Trade-off:** Next.js Route Groups vs. Subdomains. Subdomains require complex multi-domain DNS routing and cookie domain sharing; route groups achieve identical layout isolation in a single domain with zero DNS configuration.
 
 ---
 
@@ -536,7 +536,7 @@ Real estate prospective buyers demand immediate, 24/7 engagement across regional
 
 #### 5. Technical Concepts Learned
 - **Prompt Grounding vs. System Prompt Hallucination Defenses:** Prompt engineering alone cannot prevent hallucinations if unverified data is loaded into the model context. Grounding requires structural database filtering (`status: VERIFIED`, `isActive: true`) before facts ever reach prompt assembly.
-- **Server-Derived Context in Function Calling:** LLMs cannot be trusted with administrative or authorization parameters (such as `leadId`, `userId`, or role). Tools exposed to the LLM must accept only domain parameters (`slotId`, `confirmed`), while the execution engine derives tenant and identity boundaries securely from authenticated server session state.
+- **Server-Derived Context in Function Calling:** LLMs cannot be trusted with administrative or authorization parameters (such as `leadId`, `userId`, or role). Tools exposed to the LLM must accept only domain parameters (`slotId`, `confirmed`), while the execution engine derives authorization and identity boundaries securely from authenticated server session state.
 - **Dynamic Entity Assignment in Workflows:** Hardcoding assignee IDs (e.g. `user_vikram_mehta`) creates brittle production workflows. Querying active roles dynamically (`findFirst({ where: { role: 'SALES_EXEC' } })`) ensures organizational changes or employee departures do not break escalation paths.
 - **Pre-Call Ingestion vs. Post-Call Persistence:** Persisting user input prior to remote LLM invocation ensures zero data loss during upstream outages, supporting retryability and customer support visibility.
 
@@ -890,6 +890,81 @@ Internal real estate operations platforms handle sensitive buyer contact informa
   - **Technical Answer:** *Bcrypt is computationally expensive for CPUs, but its memory footprint is fixed at only 4 KB, making it vulnerable to massively parallel GPU and ASIC hardware attacks. Argon2id (the winner of the Password Hashing Competition) combines data-independent memory access (defending against side-channel cache-timing attacks) with data-dependent memory access (defending against GPU crack parallelism). By requiring substantial configurable memory (e.g. 64 MB) alongside CPU iterations, Argon2id renders GPU/ASIC cluster cracking economically and computationally infeasible.*
 - **Likely Interview Question 2:** *How do you protect your staff portal against Cross-Site Request Forgery (CSRF) and IDOR vulnerabilities?*
   - **Technical Answer:** *We employ a multi-layered defense. First, our session cookie `eq_staff_session` is configured with `SameSite=Lax` and `HttpOnly=true`, preventing cross-site form submissions and blocking JavaScript XSS access. Second, on all state-changing endpoints (`POST /api/auth/login`, `POST /api/auth/logout`), we enforce `verifySameOrigin` which validates browser-enforced `Sec-Fetch-Site: same-origin` and verifies that the `Origin` header matches `Host`/`X-Forwarded-Host`. Third, against IDOR, our server guards (`requireStaffSession`, `requireStaffRole`) resolve identity strictly from verified session tokens revalidated against PostgreSQL, and enforce role permissions (`SALES_HEAD` vs. `SALES_EXEC`) before executing any database query.*
+
+---
+
+### Milestone 6 — Phase 2: Lead Pipeline & Ingestion Interface
+
+- **Date:** 2026-11-07
+- **Status:** Complete (Phase 2 of Milestone 6 Verified)
+
+#### 1. Context & Objectives
+Following the establishment of staff authentication and portal foundations in Phase 1, Phase 2 turns the lead management area from a placeholder into a complete, database-backed CRM product. Real estate sales leadership (`SALES_HEAD`) requires end-to-end visibility across buyer inquiries, multi-touch attribution channels, and qualification metrics, while individual sales executives (`SALES_EXEC`) must strictly be restricted to their assigned accounts. Phase 2 delivered: (1) dynamic lead lifecycle status derivation (`NEW`, `ENGAGED`, `ESCALATED`, `BOOKED`, `VISITED`) grounded in relational domain records; (2) paginated lead listing with full search, multi-field filtering, and sorting; (3) navigable lead detail page (`/dashboard/leads/[id]`) displaying contact details, project preferences, DPDP consent audits, multi-touch event ledgers, appointment history, and AI chat transcripts; (4) manual lead ingestion interface with full deduplication and first-touch attribution retention; and (5) strict server-side authorization scoping and IDOR prevention.
+
+#### 2. Architecture & Design Decisions
+- **Dynamic Relational Derivation of Lead Lifecycle Status (ADR-008):** To prevent dual-source-of-truth desynchronization without mutating the locked schema, lead lifecycle states are evaluated on the fly via `LeadService.computeLeadLifecycleStatus()` according to strict domain precedence:
+  - `VISITED`: Any associated `SiteVisit` has `attendanceOutcome === AttendanceOutcome.ATTENDED`.
+  - `BOOKED`: Any associated `SiteVisit` has `bookingStatus in [CONFIRMED, COMPLETED]` without attended status.
+  - `ESCALATED`: Any associated `Conversation` has an active `Handoff` record.
+  - `ENGAGED`: `firstResponseAt !== null` or at least one `Conversation` exists without visits or escalations.
+  - `NEW`: Default baseline state (no responses, conversations, or site visits).
+- **Database-Level Query Filtering & Relational Pagination:** In `LeadService.getLifecycleStatusFilter()`, lifecycle filters are mapped directly into native Prisma relational query conditions (`siteVisits: { some: ... }`, `conversations: { some: ... }`). This allows PostgreSQL to execute `COUNT`, `SKIP`, and `TAKE` pagination directly on indexed foreign keys, eliminating application memory bloat.
+- **Strict Server-Side Staff Scoping & IDOR Prevention:**
+  - `SALES_HEAD`: Queries all active leads (`where: { deletedAt: null }`).
+  - `SALES_EXEC`: Strict relational scoping restricting queries to leads assigned to that specific executive via conversation handoffs (`where: { deletedAt: null, conversations: { some: { handoff: { assignedToId: staffUser.id } } } }`).
+  - Single-lead detail retrieval (`getLeadDetail`) applies the same query scoping. If an executive attempts to access an unassigned lead, the database query returns `null` and the API/route handler responds with HTTP 404, preventing IDOR existence enumeration.
+- **Manual Lead Ingestion (`POST /api/leads`):** Reuses the hardened `LeadService.ingestLead` transaction. Normalizes phone to E.164, detects duplicate phones, updates missing fields conditionally without overwriting existing data, preserves immutable first-touch attribution, appends a new `LeadSourceEvent` touchpoint, and records DPDP Act 2023 digital consent without overriding prior opt-outs.
+- **Real Database-Backed Dashboard Metrics:** Computed live on `/dashboard` and `/dashboard/leads` via `leadService.getLeadMetrics(user)`, displaying total inquiries, new leads, active chats, booked appointments, verified visits, channel breakdowns, and recent activity feeds without hardcoding.
+
+#### 3. Files Created or Modified
+- `src/lib/validations/lead.ts` — Added `leadQuerySchema` and `leadLifecycleStatusValues` Zod validation.
+- `src/types/index.ts` — Exported `LeadLifecycleStatus`, `LeadListItem`, `LeadPagination`, `LeadMetrics`, and `LeadDetail` domain interfaces.
+- `src/services/lead/lead.service.ts` — Implemented `computeLeadLifecycleStatus`, `getStaffLeadScope`, `getLifecycleStatusFilter`, `getLeads`, `getLeadDetail`, `getLeadMetrics`, and `getProjectsList`.
+- `src/app/api/leads/route.ts` — Authenticated lead listing (GET) and manual lead ingestion (POST) endpoint with CSRF check.
+- `src/app/api/leads/metrics/route.ts` — Authenticated role-scoped lead metrics endpoint.
+- `src/app/api/leads/[id]/route.ts` — Authenticated role-scoped lead detail endpoint with IDOR prevention.
+- `src/components/portal/leads/lead-pipeline-client.tsx` — Interactive client component with debounced search, lifecycle status pills, source and project dropdowns, table/card layouts, responsive pagination, empty states, and manual ingestion modal integration.
+- `src/components/portal/leads/ingest-lead-modal.tsx` — Modal for manual lead creation with DPDP consent affirmation.
+- `src/app/(portal)/dashboard/leads/page.tsx` — Server component with `requireStaffSession`, live metric summary cards, and lead pipeline table.
+- `src/app/(portal)/dashboard/leads/[id]/page.tsx` — Comprehensive lead detail page displaying contact cards, project preferences, DPDP consent audits, multi-touch event ledgers, appointment records, and turn-by-turn AI chat transcripts.
+- `src/app/(portal)/dashboard/page.tsx` — Connected main dashboard overview to live database metrics (`leadService.getLeadMetrics`), with accurately labeled "Escalated Leads" metric (leads currently in escalation awaiting visit booking).
+- `tests/unit/lead-pipeline.test.ts` — 25 unit tests verifying lifecycle status classification (including cancelled visits, multi-visit precedence, and handoff-to-booked transition), staff scoping logic, filter mappings, and query schema validation.
+- `tests/integration/lead-pipeline.test.ts` — 9 integration tests against isolated Neon test branch verifying SALES_HEAD pagination, SALES_EXEC record scoping, keyword search, lifecycle filtering, channel filtering, IDOR prevention, live database metrics, cancelled/multi-visit transitions, and Escalated Leads lifecycle metric accuracy.
+- `docs/ARCHITECTURE_DECISIONS.md` — Added ADR-008 documenting dynamic lifecycle derivation and role-based record scoping.
+- `docs/PROJECT_STATE.md` — Updated state, verification table, Decision Log (D-028), and next actions.
+- `docs/TDD_DRAFT.md` — Updated Decision Log (D-028).
+- `docs/ENGINEERING_LOG.md` — Documented Milestone 6 Phase 2 implementation.
+
+#### 4. Verification Performed & Results
+- `npm test` — ✅ PASS (108/108 unit tests passed across 7 files, including 25 in `tests/unit/lead-pipeline.test.ts`).
+- `npm run test:integration` — ✅ PASS (62/62 integration tests passed across 8 files against isolated Neon test branch `ep-mute-butterfly-b3a54tpa`, including 9 in `tests/integration/lead-pipeline.test.ts`).
+- `npx tsc --noEmit` — ✅ PASS (0 errors across entire workspace).
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings).
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 23 static & dynamic routes compiled in 2.3s).
+- `git diff --check` — ✅ PASS (0 trailing whitespace or EOF formatting errors).
+
+#### 5. Division of Responsibility & AI Collaboration
+- **Developer Contribution:** Approved M6 Phase 2 scope and architectural approach; mandated dynamic lifecycle derivation without schema mutation; required strict server-side authorization scoping isolating executives to assigned leads; mandated single-lead IDOR defense returning 404 for unassigned leads; directed inclusion of manual lead ingestion interface with DPDP consent; and approved documentation updates.
+- **AI Assistance:** Implemented lifecycle status derivation and filter mapping algorithms in `LeadService`, authored Zod query validation schema, built API endpoints and interactive client components (`LeadPipelineClient`, `IngestLeadModal`), built comprehensive lead detail page (`/dashboard/leads/[id]`), connected live dashboard metrics, authored 19 unit tests and 7 integration tests against the isolated Neon test branch, fixed Next.js 16 `cacheComponents` dynamic route handling, and synchronized all project documentation.
+
+#### 6. Interview Preparation & Deep-Dive
+- **Code Walkthrough:**
+  - `src/services/lead/lead.service.ts`: Implements `computeLeadLifecycleStatus(lead)` which evaluates `siteVisits` (attendance and booking status), `conversations` (handoff presence), and `firstResponseAt` to categorize each lead into one of 5 distinct funnel stages. Implements `getStaffLeadScope(staffUser)` returning `{ deletedAt: null }` for `SALES_HEAD` or `{ deletedAt: null, conversations: { some: { handoff: { assignedToId: staffUser.id } } } }` for `SALES_EXEC`.
+  - `getLeads(params, staffUser)`: Combines `roleScope`, `statusFilter`, keyword search (OR across `leadCode`, `name`, `phone`, `email`), `source`, and `projectId` into a single PostgreSQL `AND` query. Executes `count` and paginated `findMany` with related projects, consent records, visits, and handoffs. Maps raw records into `LeadListItem` DTOs.
+  - `getLeadDetail(leadId, staffUser)`: Executes a scoped findFirst query including full relational trees (project, consent, source events, conversations with messages and grounding fact IDs, site visits with slots and reminder jobs). Returns `null` if the lead is missing or outside the executive's scope.
+  - `src/app/api/leads/route.ts`: Authenticates via `requireStaffSession`, parses and validates search parameters via `leadQuerySchema`, and delegates to `leadService.getLeads`. POST handler validates with `verifySameOrigin` and `ingestLeadSchema`, delegating to `leadService.ingestLead`.
+  - `src/app/(portal)/dashboard/leads/page.tsx` & `src/components/portal/leads/lead-pipeline-client.tsx`: Server component fetches initial metrics and project lists, rendering summary metric cards and client component with real-time search, status pills, dropdown filters, responsive data table, and modal lead ingestion.
+  - `src/app/(portal)/dashboard/leads/[id]/page.tsx`: Server component renders full lead dossier with contact info, property preferences, DPDP consent audits, multi-touch event timelines, site visits, and turn-by-turn AI transcripts.
+- **Trade-off Defense (Dynamic Relational Status vs. Mutable Status Column):**
+  - *Mutable Status Column:* Adding a `status` column on `Lead` requires background jobs or distributed transactional hooks across multiple services (booking cancellation, appointment attendance, AI handoff escalation) to keep the column synchronized. Any missed event or failed transaction creates permanent data desynchronization (e.g. a visit is attended, but the lead still reads 'Booked').
+  - *Dynamic Relational Derivation (Our Choice):* By deriving status dynamically from authoritative relational records (`SiteVisit.attendanceOutcome`, `Handoff`, `Conversation`), the status is always mathematically and relationally guaranteed to reflect the real-time state of the customer journey, with zero synchronization latency and zero schema changes.
+- **Failure Mode Defense (What breaks if we remove our guardrails?):**
+  - *Removing Server-Side Scoping:* If the server returned all leads and relied on client-side React code to filter by executive, any sales executive could inspect network payloads in DevTools or make direct API calls to view competitor leads, high-net-worth buyer phone numbers, and negotiation notes across the entire developer portfolio.
+  - *Using 403 Forbidden instead of 404 Not Found on Single-Lead Detail:* If `getLeadDetail` returned 403 Forbidden for unassigned leads, an attacker could iterate through sequential IDs or lead codes to discover which leads exist in the database (IDOR enumeration). Returning 404 fails closed and prevents existence probing.
+- **Likely Interview Question 1:** *How do you enforce role-based record-level access control between Sales Heads and Sales Executives in a monolithic Next.js application without a third-party authorization service?*
+  - **Technical Answer:** *We enforce scoping at the database query layer within our service methods (`getStaffLeadScope`), rather than filtering in application memory. When a request arrives, `requireStaffSession` revalidates the caller's role against live PostgreSQL. If the caller is a `SALES_HEAD`, the query runs without restriction (`deletedAt: null`). If the caller is a `SALES_EXEC`, the query injects a mandatory relational filter: `{ conversations: { some: { handoff: { assignedToId: staffUser.id } } } }`. Because this condition is part of the SQL `WHERE` clause, PostgreSQL enforces the boundary at the query planner level. An executive cannot retrieve unassigned records regardless of the parameters they submit.*
+- **Likely Interview Question 2:** *How does your lead pipeline handle duplicate leads across different marketing channels while preserving attribution?*
+  - **Technical Answer:** *We enforce a strict separation between master identity and touchpoint events. When a lead arrives from any channel (portal, ads, website, phone), `LeadService.ingestLead` normalizes the phone number to E.164 and checks for an existing active record in an interactive transaction. If found, it merges conditionally: fields that are currently null (such as project preference or email) are updated, but existing non-null fields and the master `Lead.source` are NEVER overwritten. This strictly preserves immutable first-touch attribution. Simultaneously, every interaction appends a new row to `LeadSourceEvent` with the specific channel, campaign, and timestamp. The lead detail view displays both the immutable first-touch origin and the full chronological multi-touch journey.*
 
 ---
 

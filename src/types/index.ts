@@ -38,6 +38,145 @@ export type {
   StaffSession,
 } from "@prisma/client";
 
+export type { LeadLifecycleStatus } from "@/lib/validations/lead";
+import type { LeadLifecycleStatus } from "@/lib/validations/lead";
+
+// ---------------------------------------------------------------------------
+// Lead Pipeline Domain Types (Milestone 6.2)
+// ---------------------------------------------------------------------------
+
+export interface LeadListItem {
+  id: string;
+  leadCode: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  source: LeadSource;
+  projectId: string | null;
+  projectName: string | null;
+  configuration: string | null;
+  status: LeadLifecycleStatus;
+  firstResponseAt: Date | null;
+  createdAt: Date;
+  touchpointCount: number;
+  hasConsented: boolean;
+  assignedToName: string | null;
+}
+
+export interface LeadPagination {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface LeadMetrics {
+  totalLeads: number;
+  newLeads: number;
+  byStatus: Record<LeadLifecycleStatus, number>;
+  byProject: Array<{
+    projectId: string | null;
+    projectName: string;
+    count: number;
+  }>;
+  bySource: Record<LeadSource, number>;
+  recentActivity: Array<{
+    id: string;
+    leadId: string;
+    leadCode: string;
+    leadName: string;
+    type: "NEW_LEAD" | "TOUCHPOINT" | "VISIT_BOOKED" | "VISIT_ATTENDED" | "ESCALATED";
+    description: string;
+    occurredAt: Date;
+  }>;
+}
+
+export interface LeadDetail {
+  id: string;
+  leadCode: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  source: LeadSource;
+  projectId: string | null;
+  project: {
+    id: string;
+    name: string;
+    location: string;
+    reraNumber: string;
+    totalUnits: number;
+  } | null;
+  configuration: string | null;
+  status: LeadLifecycleStatus;
+  firstResponseAt: Date | null;
+  isAnonymized: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  sourceEvents: Array<{
+    id: string;
+    source: LeadSource;
+    campaign: string | null;
+    occurredAt: Date;
+  }>;
+  consentRecord: {
+    id: string;
+    consentText: string;
+    consentedAt: Date;
+    optedOut: boolean;
+    optOutAt: Date | null;
+  } | null;
+  conversations: Array<{
+    id: string;
+    language: string;
+    startedAt: Date;
+    endedAt: Date | null;
+    messages: Array<{
+      id: string;
+      role: string;
+      content: string;
+      createdAt: Date;
+      groundingFactIds: string[];
+    }>;
+    handoff: {
+      id: string;
+      status: string;
+      escalationReason: string;
+      summary: string;
+      assignedToId: string | null;
+      assignedTo: {
+        id: string;
+        name: string;
+        email: string;
+      } | null;
+      createdAt: Date;
+      resolvedAt: Date | null;
+    } | null;
+  }>;
+  siteVisits: Array<{
+    id: string;
+    bookingStatus: string;
+    attendanceOutcome: string;
+    bookedAt: Date;
+    attendedAt: Date | null;
+    cancelledAt: Date | null;
+    slot: {
+      id: string;
+      startsAt: Date;
+      endsAt: Date;
+      location: string;
+      status: string;
+    };
+    reminderJobs: Array<{
+      id: string;
+      reminderType: string;
+      status: string;
+      scheduledFor: Date;
+      sentAt: Date | null;
+      attempts: number;
+    }>;
+  }>;
+}
+
 // ---------------------------------------------------------------------------
 // Analytics Domain Types
 // ---------------------------------------------------------------------------

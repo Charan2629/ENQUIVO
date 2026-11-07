@@ -223,7 +223,7 @@ npm run test:coverage
 # npm run test:e2e:ui
 ```
 
-> **Current state:** `npm test` — ✅ CONFIGURED & PASSING (38/38 unit tests). `npm run test:integration` — ✅ CONFIGURED & PASSING (29/29 integration tests across 5 files against isolated Neon test branch). `npm run test:e2e` — NOT CONFIGURED (configured in Milestone 7).
+> **Current state:** `npm test` — ✅ CONFIGURED & PASSING (108/108 unit tests across 7 files). `npm run test:integration` — ✅ CONFIGURED & PASSING (62/62 integration tests across 8 files against isolated Neon test branch). `npm run test:e2e` — NOT CONFIGURED (configured in Milestone 7).
 
 ---
 

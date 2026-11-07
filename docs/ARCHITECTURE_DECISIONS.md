@@ -1,4 +1,4 @@
-﻿# ENQUIVO — Architecture Decision Records (ADRs)
+# ENQUIVO — Architecture Decision Records (ADRs)
 
 This document contains concise, evidence-based Architecture Decision Records (ADRs) for the core systems of the ENQUIVO platform. Each record details the context, evaluated alternatives, decision rationale, trade-offs, consequences, and code/test verification evidence.
 
@@ -13,6 +13,7 @@ This document contains concise, evidence-based Architecture Decision Records (AD
 5. [ADR-005: Cryptographic Buyer Sessions, Deduplication & DPDP Consent Binding](#adr-005-cryptographic-buyer-sessions-deduplication--dpdp-consent-binding)
 6. [ADR-006: Staff Authentication, Argon2id Passwords, RBAC & Live Role Revalidation](#adr-006-staff-authentication-argon2id-passwords-rbac--live-role-revalidation)
 7. [ADR-007: PostgreSQL-Backed Persistent Staff Session Revocation (Superseding In-Memory Map)](#adr-007-postgresql-backed-persistent-staff-session-revocation-superseding-in-memory-map)
+8. [ADR-008: Dynamic Relational Derivation of Lead Lifecycle Status & Role-Based Record-Level Access Control](#adr-008-dynamic-relational-derivation-of-lead-lifecycle-status--role-based-record-level-access-control)
 
 ---
 
@@ -269,3 +270,51 @@ Supersede the in-memory map by introducing the **`StaffSession` Prisma model** i
 - **Logout Route:** `src/app/api/auth/logout/route.ts`.
 - **Unit Tests:** `tests/unit/staff-auth.test.ts` (21 unit tests: verifies DB persistence of hash only, rawToken in cookie without exposing tokenHash, revoked rejection, role demotion rejection, tampered rejection before DB lookup, and fail-closed behavior on database error).
 - **Integration Tests:** `tests/integration/staff-auth.test.ts` (12 integration tests: Scenario 8 verifies `staffSession` row in PostgreSQL with hash mismatch to rawToken, logout revocation, and rejection across a separate `StaffAuthService` instance; Scenario 11 verifies rejection when database `expiresAt` has elapsed; Scenario 12 verifies tampered signature rejection before database query).
+
+---
+
+## ADR-008: Dynamic Relational Derivation of Lead Lifecycle Status & Role-Based Record-Level Access Control
+
+- **Status:** Accepted
+- **Date:** 2026-11-07
+- **Deciders:** Principal Engineering Mentor & Implementation Partner
+
+### Context
+Milestone 6.2 transforms the staff operations portal into a live, database-backed lead pipeline. The assessment requires tracking lead lifecycle milestones (`NEW`, `ENGAGED`, `ESCALATED`, `BOOKED`, `VISITED`), providing multi-channel attribution, and enforcing strict data isolation between staff roles (`SALES_HEAD` vs. `SALES_EXEC`).
+However, our Prisma `Lead` model purposefully contains immutable acquisition channel attribution (`source`), contact fields, and relational foreign keys, but does not contain a static mutable `status` column or an `assignedToId` column. We needed an architecture that satisfies strict lifecycle tracking and role-based record-level access control without mutating the database schema or creating dual-source-of-truth synchronization hazards.
+
+### Alternatives Considered
+1. **Schema Mutation (Adding `status` and `assignedToId` to `Lead`):** Adding a mutable `status` enum column and `assignedToId` FK to the `Lead` model. *Rejected:* Violates the strict schema lock protocol and creates dual-source-of-truth desynchronization bugs (e.g. if a site visit is cancelled or attendance marked, background jobs or complex distributed triggers would need to update the `Lead` table row).
+2. **Client-Side Record Filtering:** Sending all leads to the browser and filtering out unassigned leads in JavaScript. *Rejected:* Critical security vulnerability (Insecure Direct Object Reference / IDOR) that leaks confidential buyer contact information and inquiries over the wire.
+3. **Dynamic Relational Derivation & Server-Side Query Scoping:** Computing lifecycle state from authoritative domain events and enforcing scoping inside PostgreSQL queries. *Accepted.*
+
+### Decision
+1. **Deterministic Funnel Progression:** In `LeadService.computeLeadLifecycleStatus()`, dynamically evaluate the lead's lifecycle status using a strict priority hierarchy:
+   - `VISITED`: Any associated `SiteVisit` has `attendanceOutcome === AttendanceOutcome.ATTENDED`.
+   - `BOOKED`: Any associated `SiteVisit` has `bookingStatus in [CONFIRMED, COMPLETED]` without attended status.
+   - `ESCALATED`: Any associated `Conversation` has an active `Handoff` record.
+   - `ENGAGED`: `firstResponseAt !== null` or at least one `Conversation` exists without visits or escalations.
+   - `NEW`: Default baseline state (no responses, conversations, or site visits).
+2. **Database-Level Query Filtering & Pagination:** In `getLifecycleStatusFilter()`, translate lifecycle filters into native Prisma relational query conditions (`siteVisits: { some: { attendanceOutcome: "ATTENDED" } }`, etc.). This enables accurate SQL `COUNT`, `SKIP`, and `TAKE` pagination directly inside PostgreSQL without loading unpaginated datasets into application memory.
+3. **Server-Side Relational Record Scoping:** In `getStaffLeadScope()`:
+   - `SALES_HEAD`: Organizational visibility across all active leads (`where: { deletedAt: null }`).
+   - `SALES_EXEC`: Strict relational scoping restricting queries to leads assigned to that specific executive via conversation handoffs (`where: { deletedAt: null, conversations: { some: { handoff: { assignedToId: staffUser.id } } } }`).
+   - `BUYER` / Other: Immediately rejected with `StaffSessionForbiddenError` (HTTP 403).
+4. **IDOR Defense on Single-Lead Detail:** In `LeadService.getLeadDetail(leadId, staffUser)`, apply the identical server-side scope inside the database query. If an executive requests a lead that does not belong to them, the query returns `null` and the API/route handler responds with HTTP 404, preventing attackers from probing the existence of valid lead IDs.
+
+### Trade-offs & Consequences
+- **Positive:**
+  - Zero schema migration required; 100% compliant with existing 14-model architecture.
+  - Zero data desynchronization bugs between booking/attendance events and lead status.
+  - Server-side IDOR defense guarantees executives cannot inspect or enumerate unauthorized lead records.
+  - Full relational pagination avoids memory bloat in Vercel serverless functions.
+- **Negative:**
+  - Status filtering requires relational `JOIN`/`EXISTS` queries in PostgreSQL. Indexed foreign keys (`site_visits(lead_id)`, `conversations(lead_id)`, `handoffs(conversation_id)`) ensure optimal execution times under volume.
+
+### Code & Test Evidence
+- **Service:** `src/services/lead/lead.service.ts` (`computeLeadLifecycleStatus`, `getStaffLeadScope`, `getLifecycleStatusFilter`, `getLeads`, `getLeadDetail`, `getLeadMetrics`).
+- **Validation:** `src/lib/validations/lead.ts` (`leadQuerySchema`, `leadLifecycleStatusValues`).
+- **API Endpoints:** `src/app/api/leads/route.ts`, `src/app/api/leads/metrics/route.ts`, `src/app/api/leads/[id]/route.ts`.
+- **UI Components & Pages:** `src/app/(portal)/dashboard/leads/page.tsx`, `src/app/(portal)/dashboard/leads/[id]/page.tsx`, `src/components/portal/leads/lead-pipeline-client.tsx`, `src/components/portal/leads/ingest-lead-modal.tsx`.
+- **Unit Tests:** `tests/unit/lead-pipeline.test.ts` (19 tests: validates lifecycle status progression, staff scoping filters, query schema validation, and error cases).
+- **Integration Tests:** `tests/integration/lead-pipeline.test.ts` (7 tests against isolated Neon test branch: verifies SALES_HEAD pagination, SALES_EXEC scoping, keyword search, lifecycle filtering, source filtering, IDOR prevention on getLeadDetail, and live getLeadMetrics).

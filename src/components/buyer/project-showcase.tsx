@@ -34,7 +34,7 @@ export function ProjectShowcase({
             </h2>
           </div>
           <p className="max-w-md text-sm text-stone-600 dark:text-stone-400 leading-relaxed">
-            All details reflect verified database records for our two active developments in Ahmedabad. Verified pricing ranges from ₹65 lakh to ₹1.2 crore.
+            All details reflect verified database records for our two active developments in Ahmedabad. Price range is ₹65 lakh to ₹1.2 crore.
           </p>
         </div>
 

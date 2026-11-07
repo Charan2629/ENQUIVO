@@ -41,7 +41,12 @@ export default async function HomePage() {
     factsMap[f.key] = f.value;
   }
 
-  const totalApartmentsFact = factsMap["total_apartments"] || "420 apartments total";
+  // Derive concise unit count from project aggregate or fact string (e.g. "420")
+  const totalApartmentsCount =
+    projects.length > 0
+      ? projects.reduce((acc, p) => acc + p.totalUnits, 0).toString()
+      : (factsMap["total_apartments"]?.match(/\d+/)?.[0] || "420");
+
   const configurationsFact = factsMap["configurations"] || "2 BHK and 3 BHK luxury configurations";
   const priceRangeFact = factsMap["price_range"] || "₹65 lakh to ₹1.2 crore";
 
@@ -50,7 +55,7 @@ export default async function HomePage() {
       <PublicNav />
       <main className="flex-1">
         <HeroSection
-          totalApartments={totalApartmentsFact}
+          totalApartments={totalApartmentsCount}
           priceRange="₹65L – ₹1.2Cr"
         />
         <ProjectShowcase

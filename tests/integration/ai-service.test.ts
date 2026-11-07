@@ -15,6 +15,7 @@ import {
   AIConciergeService,
   AISecurityError,
   AIConversationNotFoundError,
+  AITransientError,
   GeminiClientInterface,
   buildSystemInstruction,
 } from "@/services/ai/ai.service";
@@ -215,7 +216,7 @@ describe("AIConciergeService Integration Tests (Isolated Neon Test Branch)", () 
       },
     };
 
-    const aiService = new AIConciergeService(testPrisma, bookingService, mockGemini);
+    const aiService = new AIConciergeService(testPrisma, bookingService, mockGemini, true);
 
     // Turn 1
     const result = await aiService.sendMessage({
@@ -302,7 +303,7 @@ describe("AIConciergeService Integration Tests (Isolated Neon Test Branch)", () 
       },
     };
 
-    const aiService = new AIConciergeService(testPrisma, bookingService, mockGemini);
+    const aiService = new AIConciergeService(testPrisma, bookingService, mockGemini, true);
 
     const result = await aiService.sendMessage({
       conversationId: conv.id,
@@ -367,7 +368,7 @@ describe("AIConciergeService Integration Tests (Isolated Neon Test Branch)", () 
       },
     };
 
-    const aiService = new AIConciergeService(testPrisma, bookingService, mockGemini);
+    const aiService = new AIConciergeService(testPrisma, bookingService, mockGemini, true);
 
     const result = await aiService.sendMessage({
       conversationId: conv.id,
@@ -413,11 +414,11 @@ describe("AIConciergeService Integration Tests (Isolated Neon Test Branch)", () 
     expect(guPrompt).toContain("RERA Reg: DEMO-ONLY-NOT-VERIFIED");
   });
 
-  it("7. Model error does not lose already persisted user message", async () => {
+  it("7. Model error does not lose already persisted user message and classifies transient 503", async () => {
     const lead = await createLead("Error Test Buyer", 106);
     const conv = await createConversation(lead.id);
 
-    // Mock Gemini client that throws an error
+    // Mock Gemini client that throws a transient 503 error
     const failingGemini: GeminiClientInterface = {
       async generate() {
         throw new Error("Simulated Gemini API 503 Overloaded");
@@ -431,7 +432,7 @@ describe("AIConciergeService Integration Tests (Isolated Neon Test Branch)", () 
         conversationId: conv.id,
         message: "Hello, this message must not be lost",
       })
-    ).rejects.toThrow("Simulated Gemini API 503 Overloaded");
+    ).rejects.toThrow(AITransientError);
 
     // Verify user message was still persisted in the database!
     const userMsg = await testPrisma.chatMessage.findFirst({
@@ -445,5 +446,162 @@ describe("AIConciergeService Integration Tests (Isolated Neon Test Branch)", () 
     // firstResponseAt must remain null because no AI response succeeded
     const leadAfterFailure = await testPrisma.lead.findUnique({ where: { id: lead.id } });
     expect(leadAfterFailure?.firstResponseAt).toBeNull();
+  });
+
+  it("8. Idempotent retry: subsequent retry of un-replied user message does not duplicate database records", async () => {
+    const lead = await createLead("Retry Test Buyer", 107);
+    const conv = await createConversation(lead.id);
+
+    // 1st attempt: Gemini fails with 503
+    const failingGemini: GeminiClientInterface = {
+      async generate() {
+        throw new Error("503 UNAVAILABLE: The model is overloaded");
+      },
+    };
+    const failingAiService = new AIConciergeService(testPrisma, bookingService, failingGemini);
+
+    await expect(
+      failingAiService.sendMessage({
+        conversationId: conv.id,
+        message: "Tell me about 2 BHK configurations",
+      })
+    ).rejects.toThrow(AITransientError);
+
+    // Check that 1 user message was stored
+    const userMsgsAfterFail = await testPrisma.chatMessage.findMany({
+      where: { conversationId: conv.id, role: ChatMessageRole.USER },
+    });
+    expect(userMsgsAfterFail.length).toBe(1);
+    const initialUserMsgId = userMsgsAfterFail[0].id;
+    createdMessageIds.add(initialUserMsgId);
+
+    // 2nd attempt: Buyer retries with the exact same message, and Gemini now responds
+    const successfulGemini: GeminiClientInterface = {
+      async generate() {
+        return {
+          text: "We offer spacious 2 BHK configurations starting from ₹65 Lakh at Vaastu Enclave.",
+        };
+      },
+    };
+    const workingAiService = new AIConciergeService(testPrisma, bookingService, successfulGemini);
+
+    const retryResult = await workingAiService.sendMessage({
+      conversationId: conv.id,
+      message: "Tell me about 2 BHK configurations",
+    });
+
+    createdMessageIds.add(retryResult.aiMessage.id);
+
+    // Crucial: The user message was reused, NOT duplicated!
+    expect(retryResult.userMessage.id).toBe(initialUserMsgId);
+
+    const totalUserMsgs = await testPrisma.chatMessage.findMany({
+      where: { conversationId: conv.id, role: ChatMessageRole.USER },
+    });
+    expect(totalUserMsgs.length).toBe(1);
+
+    const totalAiMsgs = await testPrisma.chatMessage.findMany({
+      where: { conversationId: conv.id, role: ChatMessageRole.AI },
+    });
+    expect(totalAiMsgs.length).toBe(1);
+
+    // Lead's firstResponseAt should now be populated atomically
+    const leadAfterSuccess = await testPrisma.lead.findUnique({ where: { id: lead.id } });
+    expect(leadAfterSuccess?.firstResponseAt).not.toBeNull();
+  });
+
+  it("9. Request-level idempotency with clientMessageId prevents duplicates under concurrent submissions", async () => {
+    const lead = await createLead("Concurrent Test Buyer", 108);
+    const conv = await createConversation(lead.id);
+
+    const clientMsgId = `cmsg_${Date.now()}_concurr_${RUN_ID}`;
+
+    const mockGemini: GeminiClientInterface = {
+      async generate() {
+        return { text: "Prices start at ₹65 Lakh." };
+      },
+    };
+    const aiService = new AIConciergeService(testPrisma, bookingService, mockGemini);
+
+    // Simulate two simultaneous requests with the exact same clientMessageId
+    const [result1, result2] = await Promise.all([
+      aiService.sendMessage({
+        conversationId: conv.id,
+        message: "What is the price?",
+        clientMessageId: clientMsgId,
+      }),
+      aiService.sendMessage({
+        conversationId: conv.id,
+        message: "What is the price?",
+        clientMessageId: clientMsgId,
+      }),
+    ]);
+
+    // Both should refer to the same user message record
+    expect(result1.userMessage.id).toBe(clientMsgId);
+    expect(result2.userMessage.id).toBe(clientMsgId);
+
+    createdMessageIds.add(clientMsgId);
+    createdMessageIds.add(result1.aiMessage.id);
+    createdMessageIds.add(result2.aiMessage.id);
+
+    // Verify only 1 USER message exists in PostgreSQL with that ID
+    const userMsgs = await testPrisma.chatMessage.findMany({
+      where: { id: clientMsgId },
+    });
+    expect(userMsgs.length).toBe(1);
+  });
+
+  it("10. createManualHandoff creates and assigns handoff directly with ZERO Gemini calls", async () => {
+    const lead = await createLead("Offline Handoff Buyer", 109);
+    const conv = await createConversation(lead.id);
+
+    // Ensure a sales executive user exists
+    const execEmail = `sales.exec.${RUN_ID}@example.com`;
+    let salesExec = await testPrisma.user.findFirst({
+      where: { role: UserRole.SALES_EXEC },
+    });
+    if (!salesExec) {
+      salesExec = await testPrisma.user.create({
+        data: {
+          email: execEmail,
+          name: "Rohan Patel",
+          passwordHash: "dummy-hash-for-testing",
+          role: UserRole.SALES_EXEC,
+        },
+      });
+      createdUserIds.add(salesExec.id);
+    }
+
+    // AI client with zero calls (if called, it throws)
+    const failingGemini: GeminiClientInterface = {
+      async generate() {
+        throw new Error("Gemini should NEVER be called during manual handoff!");
+      },
+    };
+
+    const aiService = new AIConciergeService(testPrisma, bookingService, failingGemini);
+
+    // Direct manual escalation
+    const result = await aiService.createManualHandoff({
+      conversationId: conv.id,
+      leadId: lead.id,
+      escalationReason: EscalationReason.BUYER_REQUESTED,
+      summary: "Buyer clicked talk to human sales executive button.",
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.handoff).not.toBeNull();
+    expect(result.handoff.status).toBe(HandoffStatus.ASSIGNED);
+    expect(result.handoff.assignedToId).toBe(salesExec.id);
+    expect(result.assignedToName).toBe(salesExec.name);
+    expect(result.aiMessage.content).toContain(salesExec.name);
+
+    createdHandoffIds.add(result.handoff.id);
+    createdMessageIds.add(result.aiMessage.id);
+
+    // Verify firstResponseAt is recorded
+    const leadAfterHandoff = await testPrisma.lead.findUnique({ where: { id: lead.id } });
+    expect(leadAfterHandoff?.firstResponseAt).not.toBeNull();
   });
 });

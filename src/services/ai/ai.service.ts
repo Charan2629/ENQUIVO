@@ -2,6 +2,7 @@ import {
   PrismaClient,
   ChatMessageRole,
   ConversationLanguage,
+  EscalationReason,
   FactSheetScope,
   FactSheetStatus,
   HandoffStatus,
@@ -42,6 +43,125 @@ export class AISecurityError extends AIError {
     super(message);
     this.name = "AISecurityError";
   }
+}
+
+export class AITransientError extends AIError {
+  readonly status = 503;
+  readonly retryable = true;
+  constructor(
+    message = "The AI Concierge is currently experiencing temporary high demand. Please try again in a few moments, or connect with our sales executive."
+  ) {
+    super(message);
+    this.name = "AITransientError";
+  }
+}
+
+export class AIRateLimitError extends AIError {
+  readonly status = 429;
+  readonly retryable = true;
+  constructor(
+    message = "The AI service is temporarily busy due to rate limits. Please wait a moment before trying again."
+  ) {
+    super(message);
+    this.name = "AIRateLimitError";
+  }
+}
+
+export class AIAuthError extends AIError {
+  readonly status = 500;
+  readonly retryable = false;
+  constructor(
+    message = "AI Concierge authentication configuration error. Please contact our sales team directly."
+  ) {
+    super(message);
+    this.name = "AIAuthError";
+  }
+}
+
+export class AIModelNotFoundError extends AIError {
+  readonly status = 500;
+  readonly retryable = false;
+  constructor(
+    message = "The requested AI model is unavailable or undergoing maintenance. Please contact our sales team directly."
+  ) {
+    super(message);
+    this.name = "AIModelNotFoundError";
+  }
+}
+
+/**
+ * Classifies raw provider or network errors into strictly typed, sanitized AIError subclasses.
+ * Never exposes raw provider JSON, API keys, or stack traces in buyer-facing error messages.
+ */
+export function classifyGeminiError(error: unknown): AIError {
+  if (error instanceof AIError) {
+    return error;
+  }
+
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const status =
+    typeof (error as { status?: unknown })?.status === "number"
+      ? (error as { status: number }).status
+      : undefined;
+
+  const lower = rawMessage.toLowerCase();
+
+  // 1. Transient 503 / 504 / Overloaded / Network disconnects
+  if (
+    status === 503 ||
+    status === 504 ||
+    lower.includes("503") ||
+    lower.includes("unavailable") ||
+    lower.includes("overload") ||
+    lower.includes("high demand") ||
+    lower.includes("temporarily unavailable") ||
+    lower.includes("econnreset") ||
+    lower.includes("etimedout") ||
+    lower.includes("fetch failed") ||
+    lower.includes("socket hang up")
+  ) {
+    return new AITransientError();
+  }
+
+  // 2. Rate Limits 429
+  if (
+    status === 429 ||
+    lower.includes("429") ||
+    lower.includes("resource_exhausted") ||
+    lower.includes("quota") ||
+    lower.includes("rate limit")
+  ) {
+    return new AIRateLimitError();
+  }
+
+  // 3. Authentication & API Key errors
+  if (
+    status === 401 ||
+    status === 403 ||
+    lower.includes("401") ||
+    lower.includes("403") ||
+    lower.includes("api_key") ||
+    lower.includes("unauthenticated") ||
+    lower.includes("permission_denied") ||
+    lower.includes("api key not valid")
+  ) {
+    return new AIAuthError();
+  }
+
+  // 4. Model not found or discontinued
+  if (
+    status === 404 ||
+    lower.includes("404") ||
+    lower.includes("not_found") ||
+    lower.includes("is not found") ||
+    lower.includes("no longer available")
+  ) {
+    return new AIModelNotFoundError();
+  }
+
+  return new AIError(
+    "We encountered an unexpected error communicating with the AI Concierge. Please try again or connect with our sales team."
+  );
 }
 
 // ============================================================================
@@ -126,19 +246,34 @@ export const aiToolDeclarations = [
 
 /**
  * Default live Gemini client implementation using @google/genai SDK.
+ * Configures bounded HTTP-level exponential backoff with jitter natively via SDK httpOptions.retryOptions.
+ * Prevents nested retry loops by relying on the client's HTTP retry policy.
  */
 export const createDefaultGeminiClient = (): GeminiClientInterface => {
   return {
     async generate({ systemInstruction, history, userMessage, tools }) {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey || apiKey === "your-google-gemini-api-key") {
-        throw new Error(
+        throw new AIAuthError(
           "GEMINI_API_KEY is not configured in .env.local. Configure a valid Google Gemini API key to run live AI generations."
         );
       }
 
       const { GoogleGenAI } = await import("@google/genai");
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          timeout: 30000,
+          retryOptions: {
+            attempts: 3, // Initial request + up to 2 bounded retries
+            initialDelay: 1.0, // 1s initial delay
+            maxDelay: 4.0, // 4s maximum delay cap
+            expBase: 2.0, // Exponential backoff multiplier
+            jitter: 0.5, // 50% randomized jitter
+            httpStatusCodes: [429, 503, 504], // Retry on transient rate limits & service overload
+          },
+        },
+      });
 
       const contents = [
         ...history.map((h) => ({
@@ -159,35 +294,39 @@ export const createDefaultGeminiClient = (): GeminiClientInterface => {
         };
       }
 
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents,
-        config: {
-          systemInstruction,
-          tools: [{ functionDeclarations: tools as unknown as Record<string, unknown>[] }],
-        },
-      });
+      try {
+        const response = await ai.models.generateContent({
+          model: "gemini-3.8-flash",
+          contents,
+          config: {
+            systemInstruction,
+            tools: [{ functionDeclarations: tools as unknown as Record<string, unknown>[] }],
+          },
+        });
 
-      const candidate = response.candidates?.[0];
-      const parts = candidate?.content?.parts as ContentPart[] | undefined;
-      const text = parts?.find((p) => p.text)?.text;
-      const functionCalls = parts
-        ?.filter(
-          (
-            p
-          ): p is ContentPart & {
-            functionCall: { name: string; args: Record<string, unknown> };
-          } => Boolean(p.functionCall)
-        )
-        ?.map((p) => ({
-          name: p.functionCall.name,
-          args: p.functionCall.args || {},
-        }));
+        const candidate = response.candidates?.[0];
+        const parts = candidate?.content?.parts as ContentPart[] | undefined;
+        const text = parts?.find((p) => p.text)?.text;
+        const functionCalls = parts
+          ?.filter(
+            (
+              p
+            ): p is ContentPart & {
+              functionCall: { name: string; args: Record<string, unknown> };
+            } => Boolean(p.functionCall)
+          )
+          ?.map((p) => ({
+            name: p.functionCall.name,
+            args: p.functionCall.args || {},
+          }));
 
-      return {
-        text,
-        toolCalls: functionCalls && functionCalls.length > 0 ? functionCalls : undefined,
-      };
+        return {
+          text,
+          toolCalls: functionCalls && functionCalls.length > 0 ? functionCalls : undefined,
+        };
+      } catch (rawError) {
+        throw classifyGeminiError(rawError);
+      }
     },
   };
 };
@@ -229,7 +368,8 @@ export class AIConciergeService {
   constructor(
     private db: PrismaClient = defaultPrisma,
     private bookingService: BookingService = new BookingService(db),
-    private geminiClient: GeminiClientInterface = createDefaultGeminiClient()
+    private geminiClient: GeminiClientInterface = createDefaultGeminiClient(),
+    private allowDirectToolBooking: boolean = false
   ) {}
 
   /**
@@ -309,15 +449,76 @@ export class AIConciergeService {
 
     const lead = conversation.lead;
 
-    // 2. Persist user message first (ensures user message is retained even if AI generation fails)
-    const userMessage = await this.db.chatMessage.create({
-      data: {
-        conversationId: conversation.id,
-        role: ChatMessageRole.USER,
-        content: validated.message,
-        createdAt: now,
-      },
-    });
+    // 2. Persist user message or resolve idempotent retry
+    let userMessage: Awaited<ReturnType<typeof this.db.chatMessage.create>>;
+
+    if (validated.clientMessageId) {
+      // 2a. Request-level idempotency via client-provided ID (backed by PostgreSQL PK unique constraint)
+      const existing = await this.db.chatMessage.findUnique({
+        where: { id: validated.clientMessageId },
+      });
+
+      if (existing) {
+        userMessage = existing;
+      } else {
+        try {
+          userMessage = await this.db.chatMessage.create({
+            data: {
+              id: validated.clientMessageId,
+              conversationId: conversation.id,
+              role: ChatMessageRole.USER,
+              content: validated.message,
+              createdAt: now,
+            },
+          });
+        } catch (err: unknown) {
+          // Catch concurrent duplicate insert (PostgreSQL unique constraint violation P2002)
+          if (
+            err &&
+            typeof err === "object" &&
+            "code" in err &&
+            (err as { code: string }).code === "P2002"
+          ) {
+            const reFetched = await this.db.chatMessage.findUnique({
+              where: { id: validated.clientMessageId },
+            });
+            if (reFetched) {
+              userMessage = reFetched;
+            } else {
+              throw err;
+            }
+          } else {
+            throw err;
+          }
+        }
+      }
+    } else {
+      // 2b. Heuristic retry deduplication for callers without clientMessageId
+      const lastMessage = await this.db.chatMessage.findFirst({
+        where: { conversationId: conversation.id },
+        orderBy: { createdAt: "desc" },
+      });
+
+      const isUnrepliedRetry =
+        lastMessage !== null &&
+        lastMessage.role === ChatMessageRole.USER &&
+        lastMessage.content.trim() === validated.message.trim();
+
+      if (isUnrepliedRetry) {
+        // Reuse the existing persisted user message from the prior failed attempt (prevents duplicate user turns)
+        userMessage = lastMessage;
+      } else {
+        // Persist user message first (ensures user message is retained even if AI generation fails)
+        userMessage = await this.db.chatMessage.create({
+          data: {
+            conversationId: conversation.id,
+            role: ChatMessageRole.USER,
+            content: validated.message,
+            createdAt: now,
+          },
+        });
+      }
+    }
 
     // 3. Load conversation history for context
     const previousMessages = await this.db.chatMessage.findMany({
@@ -408,19 +609,30 @@ export class AIConciergeService {
           } else if (toolCall.name === "bookVisitSlot") {
             const toolInput = bookVisitSlotToolSchema.parse(toolCall.args);
 
-            // SECURITY: Derive leadId strictly from the validated conversation context
-            const booking = await this.bookingService.bookVisit({
-              slotId: toolInput.slotId,
-              leadId: conversation.leadId,
-            });
+            // M5.2 Security Boundary: Do not allow a Gemini tool call alone to finalize a booking
+            // without independent interactive buyer confirmation.
+            if (!this.allowDirectToolBooking) {
+              finalAiText = this.localizeText(
+                conversation.language,
+                "To ensure your site visit appointment is reserved accurately, bookings require explicit buyer confirmation through our interactive slot selector or direct confirmation with our sales team. Would you like me to connect you with our sales executive to finalize your visit?",
+                "आपकी साइट विज़िट अपॉइंटमेंट सटीक रूप से आरक्षित हो, यह सुनिश्चित करने के लिए बुकिंग के लिए हमारे इंटरैक्टिव स्लॉट चयनकर्ता के माध्यम से या हमारी बिक्री टीम के साथ सीधी पुष्टि की आवश्यकता होती है। क्या आप चाहेंगे कि मैं आपकी विज़िट को अंतिम रूप देने के लिए आपको हमारे बिक्री कार्यकारी से जोड़ूँ?",
+                "તમારી સાઇટ મુલાકાત યોગ્ય રીતે નક્કી થાય તે સુનિશ્ચિત કરવા માટે, બુકિંગ માટે અમારા ઇન્ટરેક્ટિવ સ્લોટ સિલેક્ટર દ્વારા અથવા અમારી સેલ્સ ટીમ સાથે સીધી પુષ્ટિની જરૂર છે. શું તમે ઈચ્છો છો કે તમારી મુલાકાત કન્ફર્મ કરવા હું તમને અમારા સેલ્સ એક્ઝિક્યુટિવ સાથે જોડું?"
+              );
+            } else {
+              // SECURITY: Derive leadId strictly from the validated conversation context
+              const booking = await this.bookingService.bookVisit({
+                slotId: toolInput.slotId,
+                leadId: conversation.leadId,
+              });
 
-            const istTime = formatInTimeZone(booking.slot.startsAt, "Asia/Kolkata", "EEEE, dd MMMM yyyy 'at' hh:mm a 'IST'");
-            finalAiText = this.localizeText(
-              conversation.language,
-              `Your site visit has been confirmed for ${istTime} at ${booking.slot.location}. We look forward to welcoming you!`,
-              `आपकी साइट विज़िट ${istTime} पर ${booking.slot.location} पर कन्फर्म हो गई है। हम आपका स्वागत करने के लिए तत्पर हैं!`,
-              `તમારી સાઇટ મુલાકાત ${istTime} વાગ્યે ${booking.slot.location} ખાતે કન્ફર્મ થઈ ગઈ છે. અમે તમારું સ્વાગત કરવા આતુર છીએ!`
-            );
+              const istTime = formatInTimeZone(booking.slot.startsAt, "Asia/Kolkata", "EEEE, dd MMMM yyyy 'at' hh:mm a 'IST'");
+              finalAiText = this.localizeText(
+                conversation.language,
+                `Your site visit has been confirmed for ${istTime} at ${booking.slot.location}. We look forward to welcoming you!`,
+                `आपकी साइट विज़िट ${istTime} पर ${booking.slot.location} पर कन्फर्म हो गई है। हम आपका स्वागत करने के लिए तत्पर हैं!`,
+                `તમારી સાઇટ મુલાકાત ${istTime} વાગ્યે ${booking.slot.location} ખાતે કન્ફર્મ થઈ ગઈ છે. અમે તમારું સ્વાગત કરવા આતુર છીએ!`
+              );
+            }
           } else if (toolCall.name === "handoffToExecutive") {
             const toolInput = handoffToExecutiveToolSchema.parse(toolCall.args);
 
@@ -508,9 +720,111 @@ export class AIConciergeService {
         handoff: handoffRecord,
       };
     } catch (error) {
-      // User message is already safely stored in DB
-      throw error;
+      // User message is already safely stored in DB; classify transient vs permanent errors
+      throw classifyGeminiError(error);
     }
+  }
+
+  /**
+   * Directly creates and assigns a human sales executive handoff WITHOUT invoking Gemini.
+   * Guarantees 100% availability for buyer escalation even during AI provider outages or high demand.
+   */
+  async createManualHandoff(params: {
+    conversationId: string;
+    leadId: string;
+    escalationReason?: EscalationReason;
+    summary?: string;
+  }) {
+    const conversation = await this.db.conversation.findUnique({
+      where: { id: params.conversationId },
+      include: { lead: true },
+    });
+
+    if (!conversation) {
+      throw new AIConversationNotFoundError(`Conversation ${params.conversationId} not found`);
+    }
+
+    if (conversation.leadId !== params.leadId) {
+      throw new AISecurityError(
+        `Security violation: Conversation ${params.conversationId} does not belong to lead ${params.leadId}`
+      );
+    }
+
+    // Query an active sales executive from PostgreSQL
+    const salesExec = await this.db.user.findFirst({
+      where: { role: UserRole.SALES_EXEC },
+      orderBy: { createdAt: "asc" },
+      select: { id: true, name: true, email: true },
+    });
+
+    const reason = params.escalationReason ?? EscalationReason.BUYER_REQUESTED;
+    const summary = params.summary ?? "Buyer requested direct contact with a human sales executive.";
+
+    // Idempotent handoff creation: find existing or create
+    let handoff = await this.db.handoff.findUnique({
+      where: { conversationId: conversation.id },
+      include: {
+        assignedTo: {
+          select: { id: true, name: true, email: true },
+        },
+      },
+    });
+
+    if (!handoff) {
+      handoff = await this.db.handoff.create({
+        data: {
+          conversationId: conversation.id,
+          escalationReason: reason,
+          summary,
+          status: salesExec ? HandoffStatus.ASSIGNED : HandoffStatus.PENDING,
+          assignedToId: salesExec?.id ?? null,
+        },
+        include: {
+          assignedTo: {
+            select: { id: true, name: true, email: true },
+          },
+        },
+      });
+    }
+
+    const execName = handoff.assignedTo?.name || "our senior sales executive";
+
+    // Localized AI confirmation message
+    const confirmationText = this.localizeText(
+      conversation.language,
+      `I have connected you directly with ${execName}. They have received your conversation history and will reach out to assist you shortly.`,
+      `मैंने आपको सीधे ${execName} से जोड़ दिया है। उन्हें आपकी बातचीत की जानकारी मिल गई है और वे शीघ्र ही आपसे संपर्क करेंगे।`,
+      `મેં તમને સીધા ${execName} સાથે જોડ્યા છે. તેમને તમારી વાતચીતની વિગતો મળી ગઈ છે અને તેઓ ટૂંક સમયમાં તમારો સંપર્ક કરશે.`
+    );
+
+    // Persist system AI confirmation message in chat history
+    const aiMessage = await this.db.chatMessage.create({
+      data: {
+        conversationId: conversation.id,
+        role: ChatMessageRole.AI,
+        content: confirmationText,
+        groundingFactIds: [],
+        createdAt: new Date(),
+      },
+    });
+
+    // Update Lead.firstResponseAt if null
+    await this.db.lead.updateMany({
+      where: {
+        id: conversation.leadId,
+        firstResponseAt: null,
+      },
+      data: {
+        firstResponseAt: new Date(),
+      },
+    });
+
+    return {
+      success: true,
+      handoff,
+      aiMessage,
+      assignedToName: execName,
+    };
   }
 
   /**

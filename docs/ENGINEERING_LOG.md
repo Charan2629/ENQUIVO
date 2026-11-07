@@ -681,6 +681,122 @@ Milestone 5 focuses on the buyer-facing experience of ENQUIVO. Prior to Phase 1,
 
 ---
 
+### Milestone 5 — Phase 2: Secure Buyer Sessions, Functional AI Concierge & Direct Escalation
+
+- **Date:** 2026-11-06
+- **Status:** Phase 2 Complete (Verified; Pending Commit)
+
+#### 1. Context & Objectives
+Milestone 5 Phase 2 connects the public buyer interface to the live AI Concierge and backend services while resolving the architectural and security observations raised during the Milestone 4 review. Specifically:
+1. **Resolve Bearer Capability Token Exposure (Observation 2):** In M4, possession of a raw `conversationId` allowed unbounded access to that conversation. Phase 2 introduces a cryptographic guest buyer session mechanism binding conversations to signed, HTTP-only session cookies.
+2. **Prevent Autonomous AI Booking Hallucinations (Observation 1):** In M4, the AI could emit `confirmed: true` to book a visit. Phase 2 introduces an explicit booking security boundary (`allowDirectToolBooking = false`), requiring independent buyer confirmation through an interactive slot selector or human executive.
+3. **Request-Level Idempotency (`clientMessageId`):** Prevent duplicate user turns under concurrent requests (double-click/network retries) and ensure retry attempts safely reuse existing records without false deduplication of intentional repeated messages.
+4. **Decoupled Direct Human Handoff (`POST /api/chat/handoff`):** Guarantee that buyers can connect with a sales executive with 100% availability even when the external AI provider is experiencing outages, rate limits, or high demand.
+5. **Standardized CSRF & Same-Origin Defense:** Enforce browser security headers across all state-changing API endpoints.
+6. **Gemini 3.8 Flash Migration & Bounded Retries:** Migrate from deprecated `gemini-2.5-flash` to stable `gemini-3.8-flash`, configure native SDK bounded exponential backoff with jitter on 429/503/504, classify errors into typed structures, and show sanitized user-facing error banners.
+7. **Frontend Architecture Refinement:** Keep the homepage focused on property discovery with an editorial Concierge Preview Card linking to a dedicated, responsive `/concierge` chat page.
+
+#### 2. Architecture & Design Decisions
+- **Cryptographic Signed Cookie Sessions (`BuyerSessionService`, Decision D-020):** Designed a lightweight, stateless-capable guest buyer session mechanism using HMAC-SHA256 signatures over a two-part payload `base64url(payload).signature`. The payload contains `conversationId`, `leadId`, `tokenHash` (SHA-256 of a 32-byte cryptographically secure random value), `issuedAt`, and `expiresAt` (24-hour lifetime). The session is stored in an HTTP-only cookie (`eq_buyer_session`) with `SameSite=Lax`, `Path=/`, and `Secure` in production. This eliminates bearer token exposure, prevents XSS theft (JavaScript cannot read HTTP-only cookies), and allows server-side revocation by recording `endedAt` on the conversation or `optedOut: true` on the consent record.
+- **Server-Derived Identity & Anti-Tampering:** In `POST /api/chat`, identity is derived strictly from the authenticated cookie session. If the client optionally supplies a `conversationId` or `leadId` in the JSON body, the server explicitly asserts that it matches the session payload. Any mismatch throws `BuyerSessionTamperingError` (HTTP 403), completely neutralizing Insecure Direct Object References (IDOR).
+- **Request-Level Idempotency via Primary Key Constraint (`clientMessageId`, Decision D-021):** Rather than relying on heuristic text matching on the latest message (which suffers from race conditions and suppresses intentional consecutive duplicate messages), clients generate a unique `clientMessageId` per intentional turn. When creating the `ChatMessage`, the service sets `id: clientMessageId`. PostgreSQL's primary key constraint (`chat_messages_pkey`) guarantees atomic deduplication. If concurrent identical requests arrive simultaneously, one succeeds and the second catches `P2002` (unique constraint violation) and reuses the existing record. When retrying a failed attempt, the UI supplies the preserved `clientMessageId`; for a new intentional message, the UI generates a fresh ID.
+- **Decoupled Manual Human Handoff (Decision D-022):** Upstream LLM providers occasionally experience 503 UNAVAILABLE outages during peak demand. If "Talk to Sales" routes through the LLM, a buyer cannot get human help during an outage. We introduced `POST /api/chat/handoff` and `AIConciergeService.createManualHandoff`, which queries an active `SALES_EXEC` from PostgreSQL, creates or finds the `Handoff` record, records a localized system confirmation message in chat history, and updates `Lead.firstResponseAt` without invoking Gemini.
+- **Standardized CSRF Defense (`src/lib/security.ts`, Decision D-023):** Implemented `verifySameOrigin` enforcing: (1) rejection of `Sec-Fetch-Site: cross-site`; (2) validation that `Origin` host matches `Host` or `X-Forwarded-Host`; and (3) fallback verification of `Referer` when `Origin` is omitted. Applied consistently across `/api/chat`, `/api/chat/handoff`, `/api/chat/session`, and `/api/chat/session/opt-out`.
+- **SDK Native Bounded Retries (Decision D-024):** Configured `@google/genai` HTTP client retry options (`attempts: 3`, `initialDelay: 1.0s`, `maxDelay: 4.0s`, `expBase: 2.0`, `jitter: 0.5`, `httpStatusCodes: [429, 503, 504]`). This prevents nested retry loops by letting the SDK manage transient transport retries while service code handles domain errors.
+- **Booking Security Gate (`allowDirectToolBooking = false`):** Guarded `bookVisitSlot` tool execution inside `sendMessage`. When invoked by Gemini, it returns a localized compliance message guiding the buyer to the interactive slot picker or human sales team. Direct autonomous bookings without independent buyer confirmation are strictly blocked.
+- **Homepage Discovery vs. Dedicated Chat:** Visual review identified that embedding the full chat interface directly into the homepage disrupted property discovery and cramped the chat composer. We decomposed the UX into an architectural Concierge Preview Card on the homepage linking to a dedicated full-page experience at `/concierge`.
+
+#### 3. Key Implementation Details
+- `src/services/session/buyer-session.service.ts`: Implemented `generateSessionToken`, `hashToken`, `signSession`, `verifySessionToken`, `validateSession`, `revokeSession`, and `optOutSession`.
+- `src/lib/security.ts`: Authored standardized `verifySameOrigin(req)` function.
+- `src/lib/validations/ai.ts`: Extended `chatInputSchema` with optional `clientMessageId`.
+- `src/services/ai/ai.service.ts`: Migrated model to `gemini-3.8-flash`; configured native SDK bounded backoff; added `classifyGeminiError`; implemented atomic `clientMessageId` insertion and `P2002` deduplication; added `createManualHandoff`; enforced `allowDirectToolBooking = false`.
+- `src/app/api/chat/route.ts`: Cookie-authenticated chat handler with CSRF checks, anti-tampering guards, and sanitized error mapping.
+- `src/app/api/chat/handoff/route.ts`: Dedicated offline human escalation route.
+- `src/app/api/chat/session/route.ts`: Session intake handler validating affirmative DPDP consent, merging leads via `LeadService`, and issuing signed HTTP-only cookies.
+- `src/app/api/chat/session/opt-out/route.ts`: DPDP consent withdrawal handler marking `ConsentRecord.optedOut = true` and clearing session cookies.
+- `src/app/(buyer)/concierge/page.tsx`: Dedicated concierge chat page.
+- `src/components/buyer/concierge-chat.tsx`: Interactive chat component with intake form, language selector, `clientMessageId` tracking, retry preservation, direct handoff button, and mobile touch targets.
+- `src/components/buyer/concierge-cta-section.tsx`: Polished concierge preview card for homepage.
+
+#### 4. Important Files Created / Modified
+- `src/services/session/buyer-session.service.ts` — Cryptographic buyer session service.
+- `src/lib/security.ts` — Standardized CSRF & Same-Origin verification utility.
+- `src/lib/validations/ai.ts` — Updated Zod schemas with `clientMessageId`.
+- `src/services/ai/ai.service.ts` — AI service with Gemini 3.8 Flash, SDK retries, idempotency, and direct handoff.
+- `src/app/api/chat/route.ts` — Cookie-authenticated chat endpoint with CSRF and anti-tampering.
+- `src/app/api/chat/handoff/route.ts` — Decoupled direct human escalation endpoint.
+- `src/app/api/chat/session/route.ts` — Session intake & validation endpoint.
+- `src/app/api/chat/session/opt-out/route.ts` — DPDP consent withdrawal endpoint.
+- `src/app/(buyer)/concierge/page.tsx` — Dedicated concierge chat page.
+- `src/components/buyer/concierge-chat.tsx` — Responsive buyer concierge chat interface.
+- `src/components/buyer/concierge-cta-section.tsx` — Homepage concierge preview card.
+- `tests/unit/security.test.ts` — 7 CSRF & Same-Origin unit tests.
+- `tests/unit/buyer-session.test.ts` — 9 cryptographic session unit tests.
+- `tests/unit/ai-error-handling.test.ts` — 8 transient error classification unit tests.
+- `tests/integration/buyer-session.test.ts` — 9 session lifecycle integration tests.
+- `tests/integration/ai-service.test.ts` — 10 AI concierge integration tests.
+- `docs/PROJECT_STATE.md`, `docs/TDD_DRAFT.md`, `docs/ENGINEERING_LOG.md` — Synchronized live documentation.
+
+#### 5. Technical Concepts Learned
+- **HMAC-SHA256 Token Signing vs. Bearer Capabilities:** How signing session tokens with an application secret prevents client payload tampering without requiring server-side session stores (Redis/Memcached), while combining signed tokens with database validation (`Conversation.endedAt`, `ConsentRecord.optedOut`) provides instant revocation.
+- **Atomic Concurrency Control via Database Primary Keys:** Using PostgreSQL's primary key constraint (`chat_messages_pkey`) to achieve mathematically guaranteed request idempotency. Concurrent duplicate requests either insert or catch `P2002` to retrieve the winning record, avoiding race conditions inherent in application-level read-then-write logic.
+- **Upstream Failure Decoupling:** Designing critical business workflows (such as connecting a buyer with a sales executive) to operate independently of external AI provider availability. When Gemini is down with 503, the buyer can still escalate seamlessly via PostgreSQL.
+- **Same-Origin Verification & Modern Browser Metadata:** Combining `Sec-Fetch-Site` (browser-enforced metadata) with `Origin` and `Host` matching to block cross-site request forgery without requiring heavy synchronized CSRF tokens for same-origin SPAs.
+
+#### 6. Challenges Encountered & Resolutions
+- *Challenge 1 (Live Gemini 404 NOT_FOUND on Deprecated Model):* The live application returned `404 NOT_FOUND: This model models/gemini-2.5-flash is no longer available to new users. Please update your code to use models/gemini-3.8-flash.`
+  *Resolution:* Updated model identifier to `gemini-3.8-flash` in `src/services/ai/ai.service.ts` and verified tool declaration and function-calling compatibility.
+- *Challenge 2 (Gemini 503 High-Demand Failures & Nested Retries):* Live Gemini 3.8 Flash returned HTTP 503 UNAVAILABLE with high-demand messages. Adding custom application-level retries risked nested retry storms with the SDK's internal HTTP client.
+  *Resolution:* Configured native SDK `httpOptions.retryOptions` (`attempts: 3`, exponential backoff with jitter on 429/503/504), authored `classifyGeminiError` to return sanitized buyer-facing error banners, implemented a working retry button in the UI, and created the direct offline `/api/chat/handoff` route.
+- *Challenge 3 (Concurrent Duplicate User Messages):* Comparing the latest unanswered message via `findFirst` had a race condition when two identical requests hit the server simultaneously.
+  *Resolution:* Implemented request-level idempotency via `clientMessageId` backed by PostgreSQL's primary key unique constraint on `ChatMessage`. Concurrent requests safely catch `P2002` and reuse the existing record.
+- *Challenge 4 (Headless Chrome Visual Verification on Windows):* Standard Windows CLI Chrome headless capture produced a blank canvas before React hydrated.
+  *Resolution:* Authored a targeted scratch script using Chrome DevTools Protocol (CDP) WebSocket, waiting for `Page.loadEventFired` and DOM styles, capturing verified high-DPI screenshots of desktop and mobile views.
+- *Challenge 5 (Homepage Edge Viewport Typography & Scope Realism):* In `docs/screenshots/test_edge.png`, the 420 apartments statistic wrapped across 5 lines because the raw database fact string was rendered directly inside the large serif numeral slot, and the pricing statistic was labeled "VERIFIED PRICING" even though the brief provides a price range without independent third-party verification.
+  *Resolution:* In `src/app/page.tsx` and `src/components/buyer/hero-section.tsx`, sanitized the primary statistic to extract the clean numeric metric (`"420"`), added `tracking-tight` and balanced mobile grid borders (`[&:nth-child(2)]:border-r-0 sm:[&:nth-child(2)]:border-r`), and updated the label to "Price Range" (rendering uppercase as "PRICE RANGE") in both the hero ribbon and `src/components/buyer/project-showcase.tsx`.
+
+#### 7. Verification Performed & Results
+- `npm test` — ✅ PASS (62/62 unit tests passed across 5 files in 4.45s: `security.test.ts` [7], `serializers.test.ts` [18], `lead-validation.test.ts` [20], `buyer-session.test.ts` [9], `ai-error-handling.test.ts` [8]).
+- `npm run test:integration` — ✅ PASS (41/41 integration tests passed across 6 files against Neon test branch `ep-mute-butterfly-b3a54tpa` in 22.58s: `db-connection.test.ts` [4], `lead-service.test.ts` [5], `booking-service.test.ts` [5], `reminder-service.test.ts` [8], `buyer-session.test.ts` [9], `ai-service.test.ts` [10]).
+- `npx tsc --noEmit` — ✅ PASS (0 errors across entire workspace).
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings).
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 8 static & dynamic routes compiled in 6.3s).
+- `Visual CDP Review` — ✅ VERIFIED: High-DPI screenshots captured and inspected for Desktop/Mobile Homepage Concierge preview and Desktop/Mobile `/concierge` dedicated chat page.
+- `git diff --check` — ✅ PASS (0 trailing whitespace or EOF formatting errors).
+
+#### 8. Security Review & Compliance Verification
+- **Cross-Session Isolation:** Verified that possessing a conversation ID does not grant access to another buyer's chat; requests without a valid signed cookie are rejected (401), and requests with mismatched IDs throw `BuyerSessionTamperingError` (403).
+- **DPDP Act 2023 Compliance:** Explicit affirmative digital consent is captured before session issuance. The opt-out endpoint (`POST /api/chat/session/opt-out`) updates `ConsentRecord.optedOut = true`, revokes the active session, and deletes the cookie. Opted-out leads are blocked from initiating new sessions.
+- **Booking Gate:** Direct autonomous booking via AI tool calls is safely blocked (`allowDirectToolBooking = false`).
+- **CSRF & Same-Origin Defense:** Enforced across all state-changing endpoints via `verifySameOrigin`.
+
+#### 9. Division of Responsibility & AI Collaboration
+- **Developer Contribution:** Approved M5.2 scope; directed resolution of M4 security observations; mandated cryptographic signed cookie sessions over localStorage tokens; required request-level idempotency to prevent duplicate user turns; mandated decoupled offline human handoff for 100% escalation availability; directed homepage layout separation from dedicated `/concierge` page; and approved documentation updates.
+- **AI Assistance:** Implemented `BuyerSessionService`, authored CSRF verification utility, upgraded model to `gemini-3.8-flash` with native SDK bounded retries, implemented `clientMessageId` PostgreSQL primary key deduplication, built direct handoff endpoint, created `/concierge` page and refined UI components, authored unit and integration test suites, executed all verification checks, and synchronized live documentation.
+
+#### 10. Interview Preparation & Deep-Dive
+- **Code Walkthrough:**
+  - `src/services/session/buyer-session.service.ts`: Issues HMAC-SHA256 signed session cookies containing `conversationId`, `leadId`, and `tokenHash`. Verifies signatures using constant-time comparison (`crypto.timingSafeEqual`) to prevent timing attacks. Validates that the underlying conversation has not ended (`endedAt === null`) and the lead has not opted out (`optedOut !== true`).
+  - `src/app/api/chat/session/route.ts`: Ingests the buyer via `LeadService.ingestLead` (preserving first-touch attribution and recording explicit DPDP consent), finds or creates an active conversation, signs a session cookie, and returns conversation history.
+  - `src/app/api/chat/route.ts`: Extracts the cookie, validates the session, asserts that any client-supplied IDs match the session, and passes server-derived identity to `AIConciergeService.sendMessage`.
+  - `src/services/ai/ai.service.ts`: Inserts the user message with `id: clientMessageId`, catching `P2002` under concurrency. Invokes Gemini 3.8 Flash with native bounded backoff. Executes verified fact grounding tools, blocks direct bookings (`allowDirectToolBooking = false`), and persists the AI response with grounding IDs.
+  - `src/app/api/chat/handoff/route.ts`: Offline escalation endpoint. Directs `createManualHandoff` to query an active `SALES_EXEC` from PostgreSQL, create the `Handoff`, persist a confirmation message, and update `firstResponseAt` with zero Gemini calls.
+- **Trade-off Defense (HMAC-SHA256 Signed Cookies vs. Server-Side Session Store vs. Bearer Tokens):**
+  - *Bearer Tokens:* Bearer tokens in JSON request bodies are vulnerable to IDOR spoofing and require client storage (e.g. `localStorage`), making them accessible to XSS attacks.
+  - *Server-Side Session Store (Redis):* Storing session state in Redis adds external infrastructure dependencies prohibited by our architecture rules.
+  - *HMAC-SHA256 Signed HTTP-Only Cookies:* Provides stateless cryptographic verification of session authenticity with zero external dependencies. HTTP-only flag prevents JavaScript XSS theft; `SameSite=Lax` prevents CSRF; and database validation of `Conversation.endedAt` and `ConsentRecord.optedOut` enables instant revocation.
+- **Failure Mode Defense (What breaks if we remove our locks/guardrails?):**
+  - *Removing `verifySameOrigin`:* Malicious third-party websites could forge cross-site POST requests via image/form tags, triggering unauthorized chat sessions or DPDP opt-outs using the buyer's ambient cookie.
+  - *Removing `clientMessageId` Primary Key Deduplication:* If a buyer on a mobile connection double-taps "Send" or their connection drops, simultaneous requests execute concurrent `findFirst` checks before either has committed, resulting in duplicate user turns stored in PostgreSQL and confusing the AI's conversation history.
+  - *Removing Decoupled Offline Handoff:* If Gemini experiences an outage (503 UNAVAILABLE), routing human escalation requests through Gemini causes the handoff to fail, leaving the buyer stranded without sales assistance.
+- **Likely Interview Question 1:** *How does your application guarantee request-level idempotency under concurrent identical requests without a distributed Redis lock?*
+  - **Technical Answer:** *We leverage PostgreSQL's primary key unique constraint on `ChatMessage.id`. When a user submits a turn, the client generates a stable `clientMessageId`. In `AIConciergeService.sendMessage`, we attempt to insert the message using `id: clientMessageId`. Under concurrency (such as two identical requests dispatched simultaneously via `Promise.all`), PostgreSQL's atomic index insertion allows exactly one request to succeed. The second request encounters a unique constraint violation (`P2002`). Our service catches `P2002` and retrieves the committed message row from the winning request. This provides mathematically guaranteed deduplication without the latency or operational overhead of a distributed Redis lock.*
+- **Likely Interview Question 2:** *Why did you decouple the manual 'Talk to Sales' action from Gemini, and how does it ensure high availability?*
+  - **Technical Answer:** *In conversational AI architectures, relying on the LLM to process every user action introduces a single point of failure. External AI providers are subject to transient 503 overloads, rate limits, and network timeouts. If a buyer clicks 'Talk to Sales' because they are frustrated or experiencing an AI issue, routing that request through Gemini would cause the escalation to fail precisely when the AI is down. By creating a dedicated `POST /api/chat/handoff` endpoint that executes `createManualHandoff` directly against PostgreSQL, we query an active `SALES_EXEC`, create the `Handoff` record, and persist the confirmation message with zero LLM dependencies. This guarantees that human escalation has 100% operational availability.*
+
+---
+
 ## Unverified Historical Information Register
 
 In accordance with strict verification rules, the following details cannot be independently verified from the repository git log and are explicitly recorded as unverified assumptions:

@@ -10,6 +10,10 @@ export function HeroSection({
   totalApartments = "420",
   priceRange = "₹65L – ₹1.2Cr",
 }: HeroSectionProps) {
+  // Extract concise primary metric (e.g. "420" from descriptive fact strings)
+  // so the headline statistic remains visually balanced across all viewports
+  const displayApartments = totalApartments.match(/^\d+/)?.[0] || totalApartments;
+
   return (
     <section className="relative overflow-hidden border-b border-stone-200/80 bg-stone-50/60 pt-16 pb-20 dark:border-stone-800 dark:bg-stone-900/40 sm:pt-24 sm:pb-28">
       {/* Background Architectural Accent Lines */}
@@ -64,8 +68,8 @@ export function HeroSection({
         {/* Verified Portfolio Highlights Strip */}
         <div className="mt-16 sm:mt-24">
           <div className="grid grid-cols-2 gap-4 rounded-2xl border border-stone-200 bg-white p-6 shadow-xs dark:border-stone-800 dark:bg-stone-950 sm:grid-cols-4 sm:gap-8 sm:p-8">
-            <div className="flex flex-col border-r border-stone-100 last:border-r-0 dark:border-stone-800/80 pr-4">
-              <span className="text-2xl font-serif font-bold text-stone-900 dark:text-stone-50 sm:text-3xl">
+            <div className="flex flex-col border-r border-stone-100 dark:border-stone-800/80 pr-4 last:border-r-0">
+              <span className="text-2xl font-serif font-bold tracking-tight text-stone-900 dark:text-stone-50 sm:text-3xl">
                 2
               </span>
               <span className="mt-1 text-xs font-medium uppercase tracking-wider text-stone-500 dark:text-stone-400">
@@ -76,9 +80,9 @@ export function HeroSection({
               </span>
             </div>
 
-            <div className="flex flex-col border-r border-stone-100 last:border-r-0 dark:border-stone-800/80 pr-4">
-              <span className="text-2xl font-serif font-bold text-stone-900 dark:text-stone-50 sm:text-3xl">
-                {totalApartments}
+            <div className="flex flex-col border-r border-stone-100 dark:border-stone-800/80 pr-4 last:border-r-0 [&:nth-child(2)]:border-r-0 sm:[&:nth-child(2)]:border-r">
+              <span className="text-2xl font-serif font-bold tracking-tight text-stone-900 dark:text-stone-50 sm:text-3xl">
+                {displayApartments}
               </span>
               <span className="mt-1 text-xs font-medium uppercase tracking-wider text-stone-500 dark:text-stone-400">
                 Total Apartments
@@ -88,8 +92,8 @@ export function HeroSection({
               </span>
             </div>
 
-            <div className="flex flex-col border-r border-stone-100 last:border-r-0 dark:border-stone-800/80 pr-4">
-              <span className="text-2xl font-serif font-bold text-stone-900 dark:text-stone-50 sm:text-3xl">
+            <div className="flex flex-col border-r border-stone-100 dark:border-stone-800/80 pr-4 last:border-r-0">
+              <span className="text-2xl font-serif font-bold tracking-tight text-stone-900 dark:text-stone-50 sm:text-3xl">
                 2 & 3 BHK
               </span>
               <span className="mt-1 text-xs font-medium uppercase tracking-wider text-stone-500 dark:text-stone-400">
@@ -101,11 +105,11 @@ export function HeroSection({
             </div>
 
             <div className="flex flex-col">
-              <span className="text-2xl font-serif font-bold text-stone-900 dark:text-stone-50 sm:text-3xl">
+              <span className="text-2xl font-serif font-bold tracking-tight text-stone-900 dark:text-stone-50 sm:text-3xl">
                 {priceRange}
               </span>
               <span className="mt-1 text-xs font-medium uppercase tracking-wider text-stone-500 dark:text-stone-400">
-                Verified Pricing
+                Price Range
               </span>
               <span className="mt-0.5 text-xs text-stone-400 dark:text-stone-500">
                 Transparent Range

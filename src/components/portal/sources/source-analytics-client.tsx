@@ -352,8 +352,8 @@ export function SourceAnalyticsClient({
                   <YAxis stroke="#64748b" fontSize={11} tickLine={false} allowDecimals={false} />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: "#0f172a",
-                      borderColor: "#1e293b",
+                      backgroundColor: "#102F43",
+                      borderColor: "#183442",
                       borderRadius: "0.5rem",
                       color: "#f8fafc",
                       fontSize: "12px",
@@ -364,8 +364,8 @@ export function SourceAnalyticsClient({
                     align="right"
                     wrapperStyle={{ fontSize: "11px", paddingBottom: "10px" }}
                   />
-                  <Bar dataKey="leads" name="Distinct Leads" fill="#06b6d4" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="visits" name="Attended Visits" fill="#10b981" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="leads" name="Distinct Leads" fill="#13A99A" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="visits" name="Attended Visits" fill="#D6B56D" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )}
@@ -409,8 +409,8 @@ export function SourceAnalyticsClient({
                         : [`${value} touchpoints`, "Events"]
                     }
                     contentStyle={{
-                      backgroundColor: "#0f172a",
-                      borderColor: "#1e293b",
+                      backgroundColor: "#102F43",
+                      borderColor: "#183442",
                       borderRadius: "0.5rem",
                       color: "#f8fafc",
                       fontSize: "12px",
@@ -471,8 +471,8 @@ export function SourceAnalyticsClient({
                       name === "cpl" ? "Cost Per Lead (CPL)" : "Cost Per Attended Visit (CPV)",
                     ]}
                     contentStyle={{
-                      backgroundColor: "#0f172a",
-                      borderColor: "#1e293b",
+                      backgroundColor: "#102F43",
+                      borderColor: "#183442",
                       borderRadius: "0.5rem",
                       color: "#f8fafc",
                       fontSize: "12px",
@@ -504,8 +504,8 @@ export function SourceAnalyticsClient({
           </span>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+        <div className="overflow-x-auto min-w-0">
+          <table className="w-full text-left text-xs min-w-[850px]">
             <thead className="bg-slate-950/60 text-slate-400 uppercase tracking-wider text-[10px] border-b border-slate-800">
               <tr>
                 <th className="py-3 px-4 font-semibold">Channel</th>

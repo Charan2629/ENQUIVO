@@ -456,8 +456,8 @@ export function VisitsManagerClient({
                 No site visits found matching your filters.
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
+              <div className="overflow-x-auto min-w-0">
+                <table className="w-full text-left text-xs min-w-[720px]">
                   <thead className="bg-slate-950/70 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider text-[10px]">
                     <tr>
                       <th className="px-4 py-3">Buyer & Lead</th>
@@ -723,8 +723,8 @@ export function VisitsManagerClient({
                 No slots match your filter selection.
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
+              <div className="overflow-x-auto min-w-0">
+                <table className="w-full text-left text-xs min-w-[720px]">
                   <thead className="bg-slate-950/70 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider text-[10px]">
                     <tr>
                       <th className="px-4 py-3">Slot Date & Time (IST)</th>

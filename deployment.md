@@ -72,6 +72,7 @@ The app will be available at: **http://localhost:3000**
 | `AUTH_SECRET` | ✅ | Secret for Auth.js session signing. Generate: `openssl rand -base64 32` | `abc123...` |
 | `AUTH_URL` | ✅ | Full URL of the application (no trailing slash) | `http://localhost:3000` |
 | `GEMINI_API_KEY` | ✅ | Google Gemini API key (never expose as `NEXT_PUBLIC_`) | `AIza...` |
+| `GEMINI_MODEL` | Optional | Server-side model selection (default: `gemini-3.8-flash`; e.g., `gemini-3-flash-preview`) | `gemini-3.8-flash` |
 | `INNGEST_EVENT_KEY` | ✅ | Inngest event key from the Inngest Cloud dashboard | `event-...` |
 | `INNGEST_SIGNING_KEY` | ✅ | Inngest signing key for webhook verification | `signkey-...` |
 | `NEXT_PUBLIC_APP_URL` | ✅ | Public-facing app URL (safe to expose to browser) | `http://localhost:3000` |

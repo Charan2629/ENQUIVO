@@ -1,4 +1,5 @@
 import React from "react";
+import { connection } from "next/server";
 import { requireStaffSession } from "@/lib/auth-guard";
 import { sourceAnalyticsService } from "@/services/analytics/source-analytics.service";
 import { SourceAnalyticsClient } from "@/components/portal/sources/source-analytics-client";
@@ -6,6 +7,7 @@ import { SourceAnalyticsClient } from "@/components/portal/sources/source-analyt
 export const instant = false;
 
 export default async function SourcesPage() {
+  await connection();
   const session = await requireStaffSession();
 
   const initialData = await sourceAnalyticsService.getSourceAnalytics(

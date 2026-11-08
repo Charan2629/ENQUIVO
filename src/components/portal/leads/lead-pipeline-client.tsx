@@ -530,8 +530,8 @@ export function LeadPipelineClient({
         {/* Desktop Data Table */}
         {!isLoading && !error && leads.length > 0 && (
           <>
-            <div className="hidden md:block overflow-x-auto">
-              <table className="w-full text-left border-collapse">
+            <div className="hidden md:block overflow-x-auto min-w-0">
+              <table className="w-full text-left border-collapse min-w-[720px]">
                 <thead>
                   <tr className="border-b border-slate-800 bg-slate-950/40 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
                     <th className="py-3.5 px-4">Lead Code</th>

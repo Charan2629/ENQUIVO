@@ -1,4 +1,5 @@
 import React from "react";
+import { connection } from "next/server";
 import { requireSalesHead } from "@/lib/auth-guard";
 import { ShieldAlert } from "lucide-react";
 import { StaffSessionForbiddenError } from "@/services/auth/staff-auth.service";
@@ -8,6 +9,7 @@ import { FactSheetClient } from "@/components/portal/fact-sheet/fact-sheet-clien
 export const instant = false;
 
 export default async function FactSheetPage() {
+  await connection();
   try {
     await requireSalesHead();
   } catch (err) {

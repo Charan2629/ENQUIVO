@@ -1,4 +1,5 @@
 import React from "react";
+import { connection } from "next/server";
 import { UserRole } from "@prisma/client";
 import { requireStaffSession } from "@/lib/auth-guard";
 import { leadService } from "@/services/lead/lead.service";
@@ -14,6 +15,7 @@ import {
 export const instant = false;
 
 export default async function LeadsPage() {
+  await connection();
   const session = await requireStaffSession();
   const { user } = session;
 

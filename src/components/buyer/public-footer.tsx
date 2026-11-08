@@ -3,102 +3,80 @@ import { Building2, ShieldAlert } from "lucide-react";
 
 export function PublicFooter() {
   return (
-    <footer id="contact" className="border-t border-stone-200 bg-stone-100/70 text-stone-700 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400">
-      <div className="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-1 gap-10 md:grid-cols-4 lg:grid-cols-5">
-          {/* Brand Info */}
-          <div className="md:col-span-2">
+    <footer className="border-t border-[#102F43]/15 bg-[#102F43] text-[#F7F8F4] pt-14 pb-8">
+      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-10 pb-12 border-b border-white/10">
+          {/* Brand Column */}
+          <div className="md:col-span-2 space-y-4">
             <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-stone-900 text-stone-50 shadow-sm dark:bg-stone-50 dark:text-stone-950">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#13A99A] text-[#102F43] font-bold">
                 <Building2 className="h-5 w-5" />
               </div>
-              <span className="font-serif text-xl font-bold tracking-widest text-stone-900 dark:text-stone-50">
+              <span className="font-serif text-xl font-bold tracking-widest text-white">
                 ENQUIVO
               </span>
             </div>
-            <p className="mt-4 text-xs leading-relaxed text-stone-600 dark:text-stone-400 max-w-sm">
-              AI-assisted lead-response and site-visit coordination for premium residential developments across SG Highway and Shela, Ahmedabad, Gujarat, India.
+            <p className="text-xs text-[#E7F4F4]/75 max-w-sm leading-relaxed">
+              Intelligent lead-response and site-visit scheduling assistant for Prakriti Heights (SG Highway) and Vaastu Enclave (Shela) in Ahmedabad, Gujarat.
             </p>
-            <div className="mt-4 text-xs text-stone-500 dark:text-stone-400">
-              <p>Corporate Office: Ahmedabad, Gujarat, India</p>
-              <p className="mt-1">Display Timezone: Asia/Kolkata (IST, UTC+5:30)</p>
-            </div>
-          </div>
-
-          {/* Developments */}
-          <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-stone-900 dark:text-stone-200">
-              Developments
-            </h3>
-            <ul className="mt-4 space-y-2.5 text-xs">
-              <li>
-                <Link href="#projects" className="hover:text-stone-950 dark:hover:text-stone-200 transition-colors">
-                  Prakriti Heights (SG Highway)
-                </Link>
-              </li>
-              <li>
-                <Link href="#projects" className="hover:text-stone-950 dark:hover:text-stone-200 transition-colors">
-                  Vaastu Enclave (Shela)
-                </Link>
-              </li>
-              <li className="text-stone-400 dark:text-stone-600">
-                420 Contemporary Residences
-              </li>
-            </ul>
           </div>
 
           {/* Quick Links */}
           <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-stone-900 dark:text-stone-200">
-              Navigation
-            </h3>
-            <ul className="mt-4 space-y-2.5 text-xs">
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-[#D6B56D] mb-4">
+              Developments
+            </h4>
+            <ul className="space-y-2.5 text-xs text-[#E7F4F4]/80">
               <li>
-                <Link href="#projects" className="hover:text-stone-950 dark:hover:text-stone-200 transition-colors">
-                  Project Showcase
+                <Link href="#projects" className="hover:text-white transition-colors">
+                  Prakriti Heights (SG Highway)
                 </Link>
               </li>
               <li>
-                <Link href="#about" className="hover:text-stone-950 dark:hover:text-stone-200 transition-colors">
-                  Portfolio Standards
+                <Link href="#projects" className="hover:text-white transition-colors">
+                  Vaastu Enclave (Shela)
                 </Link>
               </li>
               <li>
-                <Link href="#concierge" className="hover:text-stone-950 dark:hover:text-stone-200 transition-colors">
-                  AI Concierge Overview
+                <Link href="/concierge" className="hover:text-[#13A99A] transition-colors">
+                  AI Concierge Consultation
                 </Link>
               </li>
             </ul>
           </div>
 
-          {/* Technology Reference */}
+          {/* Portal Operations */}
           <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-stone-900 dark:text-stone-200">
-              Platform Architecture
-            </h3>
-            <p className="mt-4 text-xs leading-relaxed text-stone-500 dark:text-stone-500">
-              Modular Monolith on Next.js 16 App Router, Prisma ORM, Neon PostgreSQL, Inngest Cloud, and Google Gemini API.
-            </p>
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-[#D6B56D] mb-4">
+              Staff Access
+            </h4>
+            <ul className="space-y-2.5 text-xs text-[#E7F4F4]/80">
+              <li>
+                <Link href="/login" className="hover:text-white transition-colors">
+                  Sales Portal Login
+                </Link>
+              </li>
+              <li>
+                <span className="text-[11px] text-white/50">
+                  Sales Head & Sales Executive RBAC Enforced
+                </span>
+              </li>
+            </ul>
           </div>
         </div>
 
-        {/* Mandatory RERA Disclaimer Box */}
-        <div className="mt-12 rounded-2xl border border-amber-200/80 bg-amber-50/70 p-5 dark:border-amber-900/40 dark:bg-amber-950/20">
-          <div className="flex items-start gap-3">
-            <ShieldAlert className="h-5 w-5 text-amber-700 dark:text-amber-400 shrink-0 mt-0.5" />
-            <div className="text-xs leading-relaxed text-amber-900 dark:text-amber-200">
-              <strong className="font-semibold">Statutory RERA Compliance Notice: </strong>
-              All project specifications, unit counts (420 total across Prakriti Heights and Vaastu Enclave), configurations (2 & 3 BHK), and pricing (₹65 lakh to ₹1.2 crore) displayed on this platform are derived from verified database seed data for demonstration and technical assessment evaluation purposes only. RERA Registration numbers displayed (<code className="rounded bg-amber-100 px-1 py-0.5 font-mono text-[11px] dark:bg-amber-900/60">DEMO-ONLY-NOT-VERIFIED</code>) are illustrative placeholders and must not be represented as verified government RERA approvals. This digital application does not constitute an offer for sale, advertisement, or solicitation under the Real Estate (Regulation and Development) Act, 2016.
-            </div>
+        {/* Regulatory Disclaimer Banner */}
+        <div className="my-8 p-4 rounded-2xl bg-white/5 border border-white/10 text-xs text-[#E7F4F4]/80 flex items-start gap-3">
+          <ShieldAlert className="w-5 h-5 text-[#D6B56D] shrink-0 mt-0.5" />
+          <div className="leading-relaxed">
+            <strong className="text-white">Statutory Regulatory Notice:</strong> Project specifications, pricing, configurations, and registration status (<code className="font-mono bg-[#0B2231] px-1.5 py-0.5 rounded text-[#D6B56D]">RERA Reg: DEMO-ONLY-NOT-VERIFIED</code>) are synthetic demonstration records for technical assessment evaluation only. Digital personal data is processed strictly under the Digital Personal Data Protection (DPDP) Act 2023 with right to revocation.
           </div>
         </div>
 
-        {/* Bottom Bar */}
-        <div className="mt-8 flex flex-col sm:flex-row items-center justify-between border-t border-stone-200/80 pt-8 text-xs text-stone-500 dark:border-stone-800 dark:text-stone-400">
-          <p>© 2026 ENQUIVO. All rights reserved.</p>
-          <p className="mt-2 sm:mt-0">
-            DPDP Act 2023 Digital Consent & Anti-Hallucination Grounding Enforced.
-          </p>
+        {/* Bottom Copyright */}
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 text-[11px] text-white/60 pt-4 border-t border-white/5">
+          <span>© 2026 ENQUIVO Real Estate Technology. All rights reserved.</span>
+          <span>Timeline Anchor: November 3, 2026 • Ahmedabad, Gujarat, India</span>
         </div>
       </div>
     </footer>

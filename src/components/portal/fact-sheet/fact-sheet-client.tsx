@@ -375,8 +375,8 @@ export function FactSheetClient({ initialMetrics }: FactSheetClientProps) {
             No fact sheet entries match your search or filter criteria.
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+          <div className="overflow-x-auto min-w-0">
+            <table className="w-full text-left text-xs min-w-[680px]">
               <thead className="bg-slate-950/70 border-b border-slate-800 text-slate-400 font-semibold uppercase tracking-wider text-[10px]">
                 <tr>
                   <th className="px-4 py-3">Fact Key & Scope</th>

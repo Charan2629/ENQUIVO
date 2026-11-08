@@ -1,6 +1,7 @@
 import React from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { connection } from "next/server";
 import { requireStaffSession } from "@/lib/auth-guard";
 import { leadService } from "@/services/lead/lead.service";
 import { LeadSource, BookingStatus, AttendanceOutcome } from "@prisma/client";
@@ -39,6 +40,7 @@ interface LeadDetailPageProps {
 }
 
 export default async function LeadDetailPage({ params }: LeadDetailPageProps) {
+  await connection();
   const session = await requireStaffSession();
   const { id } = await params;
 

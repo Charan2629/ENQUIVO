@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import {
   AIError,
   AITransientError,
@@ -6,6 +6,7 @@ import {
   AIAuthError,
   AIModelNotFoundError,
   classifyGeminiError,
+  getGeminiModelName,
 } from "@/services/ai/ai.service";
 
 describe("AI Error Classification & Transient Recovery (Unit Tests)", () => {
@@ -109,3 +110,29 @@ describe("AI Error Classification & Transient Recovery (Unit Tests)", () => {
   });
 });
 
+describe("Gemini Model Configuration (Unit Tests)", () => {
+  const originalModel = process.env.GEMINI_MODEL;
+
+  afterEach(() => {
+    if (originalModel !== undefined) {
+      process.env.GEMINI_MODEL = originalModel;
+    } else {
+      delete process.env.GEMINI_MODEL;
+    }
+  });
+
+  it("1. defaults to 'gemini-3.8-flash' when GEMINI_MODEL is unset", () => {
+    delete process.env.GEMINI_MODEL;
+    expect(getGeminiModelName()).toBe("gemini-3.8-flash");
+  });
+
+  it("2. defaults to 'gemini-3.8-flash' when GEMINI_MODEL is empty or whitespace", () => {
+    process.env.GEMINI_MODEL = "   ";
+    expect(getGeminiModelName()).toBe("gemini-3.8-flash");
+  });
+
+  it("3. returns trimmed override when GEMINI_MODEL is set", () => {
+    process.env.GEMINI_MODEL = "  gemini-3-flash-preview  ";
+    expect(getGeminiModelName()).toBe("gemini-3-flash-preview");
+  });
+});

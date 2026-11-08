@@ -246,6 +246,14 @@ export const aiToolDeclarations = [
 ];
 
 /**
+ * Resolves the configured Gemini model name from environment or defaults to stable "gemini-3.8-flash".
+ * Server-side only; never exposed to browser bundles.
+ */
+export function getGeminiModelName(): string {
+  return process.env.GEMINI_MODEL?.trim() || "gemini-3.8-flash";
+}
+
+/**
  * Default live Gemini client implementation using @google/genai SDK.
  * Configures bounded HTTP-level exponential backoff with jitter natively via SDK httpOptions.retryOptions.
  * Prevents nested retry loops by relying on the client's HTTP retry policy.
@@ -295,9 +303,11 @@ export const createDefaultGeminiClient = (): GeminiClientInterface => {
         };
       }
 
+      const model = getGeminiModelName();
+
       try {
         const response = await ai.models.generateContent({
-          model: "gemini-3.8-flash",
+          model,
           contents,
           config: {
             systemInstruction,
@@ -371,7 +381,7 @@ export class AIConciergeService {
     private bookingService: BookingService = new BookingService(db),
     private geminiClient: GeminiClientInterface = createDefaultGeminiClient(),
     private allowDirectToolBooking: boolean = false
-  ) {}
+  ) { }
 
   /**
    * Retrieves strictly VERIFIED and active facts from PostgreSQL.

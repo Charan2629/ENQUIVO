@@ -16,6 +16,10 @@ import {
   Lock,
 } from "lucide-react";
 import { filterBuyerFacingMessages } from "@/lib/chat-message";
+import {
+  CONCIERGE_TRANSLATIONS,
+  type Language,
+} from "@/lib/i18n/concierge-translations";
 
 interface Message {
   id: string;
@@ -38,15 +42,19 @@ interface ConciergeChatProps {
   compact?: boolean;
 }
 
-const DPDP_CONSENT_TEXT =
-  "I consent to ENQUIVO processing my name and contact number to provide verified residential property information and schedule site visits in Ahmedabad in accordance with the Digital Personal Data Protection (DPDP) Act 2023. I understand I can withdraw consent at any time.";
-
-export function ConciergeChat({ initialProjectId, className = "", compact = false }: ConciergeChatProps) {
+export function ConciergeChat({
+  initialProjectId,
+  className = "",
+  compact = false,
+}: ConciergeChatProps) {
   // Session State
   const [loadingSession, setLoadingSession] = useState(true);
   const [authenticated, setAuthenticated] = useState(false);
   const [buyerName, setBuyerName] = useState("");
-  const [language, setLanguage] = useState<"EN" | "HI" | "GU">("EN");
+  const [language, setLanguage] = useState<Language>("EN");
+
+  // Translation Dictionary
+  const t = CONCIERGE_TRANSLATIONS[language];
 
   // Intake Form State
   const [formName, setFormName] = useState("");
@@ -87,7 +95,12 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
           if (data.authenticated) {
             setAuthenticated(true);
             setBuyerName(data.lead?.name || "Valued Buyer");
-            setLanguage(data.conversation?.language || "EN");
+            const sessionLang: Language =
+              data.conversation?.language === "HI" ||
+              data.conversation?.language === "GU"
+                ? data.conversation.language
+                : "EN";
+            setLanguage(sessionLang);
             setMessages(data.messages || []);
             if (data.handoff) {
               setHandoff(data.handoff);
@@ -118,15 +131,15 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
     setFormError(null);
 
     if (!formName.trim()) {
-      setFormError("Please enter your full name.");
+      setFormError(t.nameRequiredError);
       return;
     }
     if (!formPhone.trim()) {
-      setFormError("Please enter your mobile phone number.");
+      setFormError(t.phoneRequiredError);
       return;
     }
     if (!formConsent) {
-      setFormError("Digital consent under the DPDP Act 2023 is required to proceed.");
+      setFormError(t.dpdpConsentRequiredError);
       return;
     }
 
@@ -141,7 +154,7 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
           email: formEmail.trim() || null,
           language,
           projectId: formProject || null,
-          consentText: DPDP_CONSENT_TEXT,
+          consentText: t.dpdpConsentLabel,
         }),
       });
 
@@ -154,7 +167,13 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
 
       setAuthenticated(true);
       setBuyerName(data.lead?.name || formName);
-      setLanguage(data.conversation?.language || language);
+      if (
+        data.conversation?.language === "EN" ||
+        data.conversation?.language === "HI" ||
+        data.conversation?.language === "GU"
+      ) {
+        setLanguage(data.conversation.language);
+      }
 
       // Load existing conversation messages if resumed, or add welcoming introductory greeting
       if (data.messages && data.messages.length > 0) {
@@ -171,14 +190,18 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
         ]);
       }
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "Network error starting session.");
+      setFormError(err instanceof Error ? err.message : t.networkError);
     } finally {
       setIsSubmittingForm(false);
     }
   }
 
   // 3. Handle Sending a Chat Message (with clientMessageId for request-level idempotency)
-  async function handleSendMessage(overrideMessage?: string, isRetry = false, retryClientMessageId?: string) {
+  async function handleSendMessage(
+    overrideMessage?: string,
+    isRetry = false,
+    retryClientMessageId?: string
+  ) {
     if (isSending) return;
     const textToSend = (overrideMessage || inputMessage).trim();
     if (!textToSend) return;
@@ -216,14 +239,11 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
       if (!res.ok) {
         setLastFailedMessage({ text: textToSend, clientMessageId });
         if (res.status === 401 || res.status === 403) {
-          setChatError(data.error || "Session ended or expired. Please re-authenticate.");
+          setChatError(data.error || t.sessionEndedError);
           setAuthenticated(false);
           return;
         }
-        setChatError(
-          data.error ||
-            "The AI Concierge is currently experiencing temporary high demand. Please try again in a moment."
-        );
+        setChatError(data.error || t.temporaryHighDemandError);
         return;
       }
 
@@ -252,9 +272,7 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
     } catch (err) {
       setLastFailedMessage({ text: textToSend, clientMessageId });
       setChatError(
-        err instanceof Error && err.message
-          ? "Network connection interrupted. Please try again or connect with our sales team."
-          : "Network error. Please try again."
+        err instanceof Error && err.message ? t.networkError : "Network error. Please try again."
       );
     } finally {
       setIsSending(false);
@@ -303,13 +321,11 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
 
       if (!res.ok) {
         if (res.status === 401 || res.status === 403) {
-          setChatError(data.error || "Session ended or expired. Please re-authenticate.");
+          setChatError(data.error || t.sessionEndedError);
           setAuthenticated(false);
           return;
         }
-        setChatError(
-          data.error || "Failed to connect with sales team. Please try again."
-        );
+        setChatError(data.error || t.humanConnectionError);
         return;
       }
 
@@ -337,9 +353,7 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
       }
     } catch (err) {
       setChatError(
-        err instanceof Error && err.message
-          ? "Network connection interrupted while connecting to sales. Please try again."
-          : "Network error. Please try again."
+        err instanceof Error && err.message ? t.networkError : "Network error. Please try again."
       );
     } finally {
       setIsSending(false);
@@ -368,10 +382,10 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
       setMessages([]);
       setHandoff(null);
       setShowOptOutConfirm(false);
-      alert("Your consent has been successfully withdrawn. You will receive no further communications.");
+      alert(t.optOutSuccessAlert);
     } catch (err) {
       console.error("Failed to opt out:", err);
-      alert("Failed to record opt-out. Please refresh and try again.");
+      alert(t.optOutFailureAlert);
     } finally {
       setIsOptingOut(false);
     }
@@ -380,9 +394,13 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
   // Loading Session Skeleton
   if (loadingSession) {
     return (
-      <div className={`flex flex-col items-center justify-center p-8 rounded-2xl bg-stone-900 border border-white/10 text-stone-300 min-h-[400px] ${className}`}>
-        <RefreshCw className="h-6 w-6 animate-spin text-amber-400 mb-3" />
-        <p className="text-xs uppercase tracking-wider text-stone-400">Initializing Secure Session...</p>
+      <div
+        className={`flex flex-col items-center justify-center p-8 rounded-2xl bg-white border border-[#102F43]/10 text-[#102F43] min-h-[420px] shadow-[0_4px_20px_-2px_rgba(16,47,67,0.08)] ${className}`}
+      >
+        <RefreshCw className="h-6 w-6 animate-spin text-[#13A99A] mb-3" />
+        <p className="text-xs uppercase tracking-wider text-[#102F43]/70 font-semibold">
+          {t.startingSessionButton}
+        </p>
       </div>
     );
   }
@@ -390,24 +408,27 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
   // State 1: Intake & Digital Consent Form
   if (!authenticated) {
     return (
-      <div className={`rounded-2xl border border-white/15 bg-stone-900 p-6 sm:p-8 text-stone-100 shadow-xl backdrop-blur-md ${className}`}>
-        <div className="flex items-center justify-between pb-4 border-b border-white/10 gap-2">
+      <div
+        className={`rounded-2xl border border-[#102F43]/15 bg-white p-6 sm:p-8 text-[#102F43] shadow-[0_10px_35px_-5px_rgba(16,47,67,0.08)] ${className}`}
+      >
+        {/* Form Header with Language Switcher */}
+        <div className="flex items-center justify-between pb-4 border-b border-[#102F43]/10 gap-2">
           <div className="flex items-center gap-2 min-w-0">
-            <div className="h-2 w-2 shrink-0 rounded-full bg-amber-400 animate-pulse" />
-            <h3 className="font-serif text-base sm:text-lg font-medium text-white tracking-wide truncate">
-              ENQUIVO AI Concierge
+            <div className="h-2.5 w-2.5 shrink-0 rounded-full bg-[#13A99A] animate-pulse" />
+            <h3 className="font-serif text-base sm:text-lg font-semibold text-[#102F43] tracking-wide truncate">
+              {t.intakeTitle}
             </h3>
           </div>
-          <div className="flex items-center rounded-lg bg-white/5 p-0.5 border border-white/10 shrink-0 text-xs">
+          <div className="flex items-center rounded-lg bg-[#F7F8F4] p-1 border border-[#102F43]/15 shrink-0 text-xs">
             {(["EN", "HI", "GU"] as const).map((lang) => (
               <button
                 key={lang}
                 type="button"
                 onClick={() => setLanguage(lang)}
-                className={`px-2 sm:px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+                className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all cursor-pointer ${
                   language === lang
-                    ? "bg-amber-400 text-stone-950 shadow-xs font-bold"
-                    : "text-stone-300 hover:text-white hover:bg-white/10"
+                    ? "bg-[#102F43] text-white shadow-xs"
+                    : "text-[#102F43]/70 hover:text-[#102F43] hover:bg-[#E7F4F4]"
                 }`}
               >
                 <span className="hidden sm:inline">
@@ -419,90 +440,87 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
           </div>
         </div>
 
-        <p className="mt-4 text-xs text-stone-300 leading-relaxed">
-          {language === "HI"
-            ? "प्रकृति हाइट्स और वास्तु एन्क्लेव के बारे में 24/7 तत्काल सत्यापित जानकारी प्राप्त करें और निजी साइट विज़िट बुक करें।"
-            : language === "GU"
-            ? "પ્રકૃતિ હાઇટ્સ અને વાસ્તુ એન્ક્લેવ વિશે 24/7 ત્વરિત ચકાસાયેલ માહિતી મેળવો અને ખાનગી સાઇટ મુલાકાત બુક કરો."
-            : "Connect instantly with our grounded residential AI assistant for Prakriti Heights and Vaastu Enclave. All replies are strictly grounded in verified developer facts."}
+        <p className="mt-4 text-xs sm:text-sm text-[#102F43]/80 leading-relaxed">
+          {t.intakeSubtitle}
         </p>
 
         {formError && (
-          <div className="mt-4 flex items-start gap-2.5 rounded-xl bg-rose-500/10 p-3 border border-rose-500/20 text-rose-300 text-xs">
-            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-400" />
-            <span>{formError}</span>
+          <div className="mt-4 flex items-start gap-2.5 rounded-xl bg-rose-50 p-3.5 border border-rose-200 text-rose-800 text-xs shadow-2xs">
+            <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-600" />
+            <span className="font-medium">{formError}</span>
           </div>
         )}
 
         <form onSubmit={handleStartSession} className="mt-5 space-y-4">
           <div>
-            <label className="block text-xs font-medium text-stone-300 mb-1">
-              Full Name <span className="text-amber-400">*</span>
+            <label className="block text-xs font-semibold text-[#102F43] mb-1.5">
+              {t.nameLabel} <span className="text-[#13A99A]">*</span>
             </label>
             <input
               type="text"
               required
               value={formName}
               onChange={(e) => setFormName(e.target.value)}
-              placeholder="e.g. Hardik Patel"
-              className="w-full rounded-xl bg-white/5 px-3.5 py-2.5 text-xs text-white placeholder-stone-500 border border-white/10 focus:border-amber-400 focus:outline-hidden focus:ring-1 focus:ring-amber-400"
+              placeholder={t.namePlaceholder}
+              className="w-full rounded-xl bg-[#F7F8F4] px-3.5 py-2.5 text-xs sm:text-sm text-[#102F43] placeholder-[#102F43]/40 border border-[#102F43]/15 focus:border-[#13A99A] focus:outline-hidden focus:ring-1 focus:ring-[#13A99A] transition-colors"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-stone-300 mb-1">
-              Mobile Phone Number (India) <span className="text-amber-400">*</span>
+            <label className="block text-xs font-semibold text-[#102F43] mb-1.5">
+              {t.phoneLabel} <span className="text-[#13A99A]">*</span>
             </label>
             <input
               type="tel"
               required
               value={formPhone}
               onChange={(e) => setFormPhone(e.target.value)}
-              placeholder="e.g. +91 98765 43210"
-              className="w-full rounded-xl bg-white/5 px-3.5 py-2.5 text-xs text-white placeholder-stone-500 border border-white/10 focus:border-amber-400 focus:outline-hidden focus:ring-1 focus:ring-amber-400"
+              placeholder={t.phonePlaceholder}
+              className="w-full rounded-xl bg-[#F7F8F4] px-3.5 py-2.5 text-xs sm:text-sm text-[#102F43] placeholder-[#102F43]/40 border border-[#102F43]/15 focus:border-[#13A99A] focus:outline-hidden focus:ring-1 focus:ring-[#13A99A] transition-colors"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-stone-300 mb-1">
-              Email Address <span className="text-stone-500 font-normal">(Optional)</span>
+            <label className="block text-xs font-semibold text-[#102F43] mb-1.5">
+              {t.emailLabel}{" "}
+              <span className="text-[#102F43]/50 font-normal">{t.emailOptional}</span>
             </label>
             <input
               type="email"
               value={formEmail}
               onChange={(e) => setFormEmail(e.target.value)}
-              placeholder="name@example.com"
-              className="w-full rounded-xl bg-white/5 px-3.5 py-2.5 text-xs text-white placeholder-stone-500 border border-white/10 focus:border-amber-400 focus:outline-hidden focus:ring-1 focus:ring-amber-400"
+              placeholder={t.emailPlaceholder}
+              className="w-full rounded-xl bg-[#F7F8F4] px-3.5 py-2.5 text-xs sm:text-sm text-[#102F43] placeholder-[#102F43]/40 border border-[#102F43]/15 focus:border-[#13A99A] focus:outline-hidden focus:ring-1 focus:ring-[#13A99A] transition-colors"
             />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-stone-300 mb-1">
-              Project Interest
+            <label className="block text-xs font-semibold text-[#102F43] mb-1.5">
+              {t.projectInterestLabel}
             </label>
             <select
               value={formProject}
               onChange={(e) => setFormProject(e.target.value)}
-              className="w-full rounded-xl bg-stone-800 px-3 py-2 text-xs text-white border border-white/10 focus:border-amber-400 focus:outline-hidden focus:ring-1 focus:ring-amber-400"
+              className="w-full rounded-xl bg-[#F7F8F4] px-3 py-2.5 text-xs sm:text-sm text-[#102F43] border border-[#102F43]/15 focus:border-[#13A99A] focus:outline-hidden focus:ring-1 focus:ring-[#13A99A] transition-colors cursor-pointer"
             >
-              <option value="">All Projects (Ahmedabad Portfolio)</option>
-              <option value="proj_prakriti_heights">Prakriti Heights (SG Highway Corridor)</option>
-              <option value="proj_vaastu_enclave">Vaastu Enclave (Shela / South Bopal)</option>
+              <option value="">{t.projectAllOption}</option>
+              <option value="proj_prakriti_heights">{t.projectPrakritiOption}</option>
+              <option value="proj_vaastu_enclave">{t.projectVaastuOption}</option>
             </select>
           </div>
 
           {/* DPDP Act 2023 Digital Consent Affirmation */}
-          <div className="rounded-xl bg-white/5 p-3.5 border border-white/10">
+          <div className="rounded-xl bg-[#E7F4F4]/70 p-3.5 border border-[#13A99A]/30">
             <label className="flex items-start gap-2.5 cursor-pointer">
               <input
                 type="checkbox"
                 required
                 checked={formConsent}
                 onChange={(e) => setFormConsent(e.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-stone-600 bg-stone-800 text-amber-500 focus:ring-amber-400"
+                className="mt-0.5 h-4 w-4 rounded border-[#102F43]/30 bg-white text-[#13A99A] focus:ring-[#13A99A] cursor-pointer"
               />
-              <span className="text-[11px] leading-relaxed text-stone-300">
-                <strong className="text-white">DPDP Act 2023 Consent:</strong> I agree to ENQUIVO processing my details to respond to property enquiries and schedule site visits. I may withdraw consent at any time.
+              <span className="text-[11px] leading-relaxed text-[#102F43]/85">
+                {t.dpdpConsentLabel}
               </span>
             </label>
           </div>
@@ -510,25 +528,25 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
           <button
             type="submit"
             disabled={isSubmittingForm}
-            className="w-full flex items-center justify-center gap-2 rounded-xl bg-amber-400 px-4 py-3 text-xs font-semibold text-stone-950 shadow-sm hover:bg-amber-300 focus:outline-hidden transition-colors disabled:opacity-50"
+            className="w-full flex items-center justify-center gap-2 rounded-xl bg-[#13A99A] hover:bg-[#0f8c80] px-4 py-3 text-xs sm:text-sm font-semibold text-white shadow-md focus:outline-hidden transition-all disabled:opacity-50 cursor-pointer"
           >
             {isSubmittingForm ? (
               <>
                 <RefreshCw className="h-4 w-4 animate-spin" />
-                <span>Establishing Secure Session...</span>
+                <span>{t.startingSessionButton}</span>
               </>
             ) : (
               <>
                 <Sparkles className="h-4 w-4" />
-                <span>Start AI Concierge Consultation</span>
+                <span>{t.startSessionButton}</span>
               </>
             )}
           </button>
         </form>
 
-        <div className="mt-4 flex items-center justify-center gap-1.5 text-[10px] text-stone-400">
-          <Lock className="h-3 w-3 text-emerald-400" />
-          <span>HTTP-only signed cookie session. No marketing spam.</span>
+        <div className="mt-4 flex items-center justify-center gap-1.5 text-[11px] text-[#102F43]/70 font-medium">
+          <Lock className="h-3.5 w-3.5 text-[#13A99A]" />
+          <span>{t.privacySignedNotice}</span>
         </div>
       </div>
     );
@@ -536,27 +554,31 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
 
   // State 2: Active Authenticated Chat Experience
   return (
-    <div className={`flex flex-col rounded-2xl border border-white/15 bg-stone-900 text-stone-100 shadow-2xl backdrop-blur-md overflow-hidden ${compact ? "h-[500px]" : "h-[580px] sm:h-[650px] lg:h-[680px]"} ${className}`}>
+    <div
+      className={`flex flex-col rounded-2xl border border-[#102F43]/15 bg-white text-[#102F43] shadow-[0_15px_40px_-5px_rgba(16,47,67,0.12)] overflow-hidden ${
+        compact ? "h-[500px]" : "h-[580px] sm:h-[650px] lg:h-[680px]"
+      } ${className}`}
+    >
       {/* Chat Header */}
-      <div className="flex items-center justify-between px-4 sm:px-6 py-3 border-b border-white/10 bg-white/5 gap-2">
+      <div className="flex items-center justify-between px-4 sm:px-6 py-3.5 border-b border-[#183442] bg-[#102F43] text-white gap-2">
         <div className="flex items-center gap-2.5 min-w-0">
           <div className="relative shrink-0">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-400/20 text-amber-300 border border-amber-400/30">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#E7F4F4]/15 text-[#38C2B4] border border-[#13A99A]/40">
               <Bot className="h-4 w-4" />
             </div>
-            <div className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-400 ring-2 ring-stone-900 animate-pulse" />
+            <div className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-[#13A99A] ring-2 ring-[#102F43] animate-pulse" />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 sm:gap-2">
-              <h3 className="font-serif text-xs sm:text-sm font-semibold text-white truncate">
+              <h3 className="font-serif text-xs sm:text-sm font-semibold text-white tracking-wide truncate">
                 ENQUIVO Concierge
               </h3>
-              <span className="shrink-0 text-[9px] sm:text-[10px] font-semibold text-emerald-400 uppercase tracking-wider bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                Grounded
+              <span className="shrink-0 text-[9px] sm:text-[10px] font-semibold text-[#38C2B4] uppercase tracking-wider bg-[#13A99A]/20 px-2 py-0.5 rounded border border-[#13A99A]/30">
+                {t.groundedStatusBadge}
               </span>
             </div>
-            <p className="text-[10px] sm:text-[11px] text-stone-400 truncate">
-              {buyerName ? `Consulting with ${buyerName}` : "Verified Residential Assistant"}
+            <p className="text-[10px] sm:text-[11px] text-white/70 truncate">
+              {buyerName ? t.activeConsultationWith(buyerName) : t.verifiedAssistantSubtitle}
             </p>
           </div>
         </div>
@@ -564,16 +586,16 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
         {/* Controls */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           {/* Language Toggle */}
-          <div className="flex items-center rounded-lg bg-white/5 p-0.5 border border-white/10 text-xs">
+          <div className="flex items-center rounded-lg bg-white/10 p-0.5 border border-white/15 text-xs">
             {(["EN", "HI", "GU"] as const).map((lang) => (
               <button
                 key={lang}
                 type="button"
                 onClick={() => setLanguage(lang)}
-                className={`px-1.5 sm:px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-all cursor-pointer ${
                   language === lang
-                    ? "bg-amber-400 text-stone-950 font-bold"
-                    : "text-stone-400 hover:text-white"
+                    ? "bg-[#D6B56D] text-[#102F43] font-bold shadow-2xs"
+                    : "text-white/70 hover:text-white"
                 }`}
               >
                 {lang}
@@ -586,12 +608,12 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
             type="button"
             disabled={isSending}
             onClick={handleRequestHuman}
-            title="Connect with senior sales executive"
-            aria-label="Connect with senior sales executive"
-            className="flex items-center gap-1 rounded-lg bg-white/10 px-2 sm:px-2.5 py-1 text-[11px] font-medium text-stone-200 hover:bg-white/20 transition-colors disabled:opacity-40 cursor-pointer shrink-0"
+            title={t.requestHumanTitle}
+            aria-label={t.requestHumanTitle}
+            className="flex items-center gap-1 rounded-lg bg-white/10 px-2 sm:px-2.5 py-1 text-[11px] font-medium text-white hover:bg-white/20 transition-colors disabled:opacity-40 cursor-pointer shrink-0 border border-white/10"
           >
-            <UserCheck className="h-3.5 w-3.5 text-amber-400 shrink-0" />
-            <span className="hidden md:inline">Sales Exec</span>
+            <UserCheck className="h-3.5 w-3.5 text-[#D6B56D] shrink-0" />
+            <span className="hidden md:inline">{t.requestHumanButton}</span>
           </button>
 
           {/* End / Opt-Out Menu */}
@@ -600,7 +622,7 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
             onClick={() => setShowOptOutConfirm(true)}
             title="End session or manage privacy"
             aria-label="End session"
-            className="p-1 sm:p-1.5 rounded-lg text-stone-400 hover:text-rose-400 hover:bg-white/10 transition-colors shrink-0 cursor-pointer"
+            className="p-1.5 rounded-lg text-white/70 hover:text-rose-300 hover:bg-white/10 transition-colors shrink-0 cursor-pointer"
           >
             <LogOut className="h-3.5 w-3.5" />
           </button>
@@ -609,24 +631,27 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
 
       {/* Human Handoff Banner (if escalated) */}
       {handoff && (
-        <div className="flex items-start gap-2.5 px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/20 text-amber-300 text-xs">
-          <CheckCircle2 className="h-4 w-4 shrink-0 text-amber-400 mt-0.5" />
+        <div className="flex items-start gap-2.5 px-4 py-2.5 bg-[#E7F4F4] border-b border-[#13A99A]/30 text-[#102F43] text-xs">
+          <CheckCircle2 className="h-4 w-4 shrink-0 text-[#13A99A] mt-0.5" />
           <div className="flex-1">
-            <span className="font-semibold text-white">Connected with {handoff.assignedToName}:</span>{" "}
-            <span>{handoff.summary} (Status: {handoff.status})</span>
+            <span className="font-semibold">
+              {t.connectedWithHumanBanner(handoff.assignedToName, handoff.summary, handoff.status)}
+            </span>
           </div>
         </div>
       )}
 
       {/* Message History Container */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-4.5 text-xs sm:text-[13px]">
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-4.5 text-xs sm:text-[13px] bg-[#F7F8F4]">
         {filterBuyerFacingMessages(messages).map((m) => (
           <div
             key={m.id}
-            className={`flex items-start gap-2.5 sm:gap-3 ${m.role === "USER" ? "justify-end" : "justify-start"}`}
+            className={`flex items-start gap-2.5 sm:gap-3 ${
+              m.role === "USER" ? "justify-end" : "justify-start"
+            }`}
           >
             {m.role === "AI" && (
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-amber-400/20 text-amber-300 border border-amber-400/30 mt-0.5">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#E7F4F4] text-[#13A99A] border border-[#13A99A]/30 mt-0.5">
                 <Bot className="h-4 w-4" />
               </div>
             )}
@@ -634,23 +659,23 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
             <div
               className={`max-w-[85%] sm:max-w-[78%] rounded-2xl px-4 py-3 sm:px-4.5 sm:py-3.5 text-xs sm:text-[13px] leading-relaxed shadow-xs ${
                 m.role === "USER"
-                  ? "bg-amber-400 text-stone-950 font-medium rounded-tr-xs"
-                  : "bg-stone-800/90 text-stone-100 rounded-tl-xs border border-white/10"
+                  ? "bg-[#102F43] text-white font-medium rounded-tr-xs"
+                  : "bg-white text-[#102F43] rounded-tl-xs border border-[#102F43]/10"
               }`}
             >
               <div className="whitespace-pre-wrap">{m.content}</div>
 
               {/* Verified Grounding Badge */}
               {m.role === "AI" && m.groundingFactIds && m.groundingFactIds.length > 0 && (
-                <div className="mt-2.5 pt-2 border-t border-white/10 flex items-center gap-1.5 text-[10px] sm:text-[11px] text-emerald-400 font-medium">
-                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-                  <span>Grounded in {m.groundingFactIds.length} verified developer facts</span>
+                <div className="mt-2.5 pt-2 border-t border-[#102F43]/10 flex items-center gap-1.5 text-[10px] sm:text-[11px] text-[#0D7A6F] font-semibold bg-[#E7F4F4]/60 px-2 py-1 rounded-md">
+                  <ShieldCheck className="h-3.5 w-3.5 text-[#13A99A] shrink-0" />
+                  <span>{t.groundedFactsBadge(m.groundingFactIds.length)}</span>
                 </div>
               )}
             </div>
 
             {m.role === "USER" && (
-              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-stone-800 text-stone-300 border border-white/10 mt-0.5">
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#102F43] text-white border border-[#102F43]/30 mt-0.5">
                 <User className="h-4 w-4" />
               </div>
             )}
@@ -660,15 +685,17 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
         {/* Loading / Typing Indicator */}
         {isSending && (
           <div className="flex items-start gap-2.5">
-            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-amber-400/20 text-amber-300 border border-amber-400/30">
-              <Bot className="h-3.5 w-3.5" />
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#E7F4F4] text-[#13A99A] border border-[#13A99A]/30">
+              <Bot className="h-4 w-4" />
             </div>
-            <div className="rounded-2xl rounded-tl-xs bg-white/10 px-4 py-3 border border-white/10">
+            <div className="rounded-2xl rounded-tl-xs bg-white px-4 py-3 border border-[#102F43]/10 shadow-2xs">
               <div className="flex items-center gap-1.5">
-                <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-bounce" />
-                <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-bounce [animation-delay:0.2s]" />
-                <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-bounce [animation-delay:0.4s]" />
-                <span className="ml-2 text-[10px] text-stone-400">Consulting verified database...</span>
+                <span className="h-1.5 w-1.5 rounded-full bg-[#13A99A] animate-bounce" />
+                <span className="h-1.5 w-1.5 rounded-full bg-[#13A99A] animate-bounce [animation-delay:0.2s]" />
+                <span className="h-1.5 w-1.5 rounded-full bg-[#13A99A] animate-bounce [animation-delay:0.4s]" />
+                <span className="ml-2 text-[11px] text-[#102F43]/70 font-medium">
+                  {t.consultingDatabaseIndicator}
+                </span>
               </div>
             </div>
           </div>
@@ -676,10 +703,10 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
 
         {/* Error Alert with Working Retry and Human Escalation Fallback */}
         {chatError && (
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl bg-rose-500/10 p-3.5 border border-rose-500/25 text-rose-300 text-xs shadow-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 rounded-xl bg-rose-50 p-3.5 border border-rose-200 text-rose-800 text-xs shadow-xs">
             <div className="flex items-start gap-2">
-              <AlertCircle className="h-4 w-4 shrink-0 text-rose-400 mt-0.5" />
-              <span className="leading-relaxed">{chatError}</span>
+              <AlertCircle className="h-4 w-4 shrink-0 text-rose-600 mt-0.5" />
+              <span className="leading-relaxed font-medium">{chatError}</span>
             </div>
             <div className="flex items-center gap-2 self-end sm:self-auto shrink-0">
               {lastFailedMessage && (
@@ -687,20 +714,20 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
                   type="button"
                   disabled={isSending}
                   onClick={handleRetry}
-                  className="flex items-center gap-1.5 rounded-lg bg-rose-500/20 px-3 py-1 text-[11px] font-semibold text-rose-200 hover:bg-rose-500/30 transition-colors disabled:opacity-50 cursor-pointer"
+                  className="flex items-center gap-1.5 rounded-lg bg-rose-100 px-3 py-1 text-[11px] font-semibold text-rose-800 hover:bg-rose-200 transition-colors disabled:opacity-50 cursor-pointer"
                 >
                   <RefreshCw className={`h-3 w-3 ${isSending ? "animate-spin" : ""}`} />
-                  <span>Retry</span>
+                  <span>{t.retryButton}</span>
                 </button>
               )}
               <button
                 type="button"
                 disabled={isSending}
                 onClick={handleRequestHuman}
-                className="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1 text-[11px] font-medium text-stone-200 hover:bg-white/20 transition-colors disabled:opacity-50 cursor-pointer"
+                className="flex items-center gap-1.5 rounded-lg bg-white px-3 py-1 text-[11px] font-semibold text-[#102F43] border border-[#102F43]/20 hover:bg-[#E7F4F4] transition-colors disabled:opacity-50 cursor-pointer"
               >
-                <UserCheck className="h-3 w-3 text-amber-400" />
-                <span>Talk to Sales</span>
+                <UserCheck className="h-3 w-3 text-[#13A99A]" />
+                <span>{t.talkToSalesButton}</span>
               </button>
             </div>
           </div>
@@ -711,37 +738,39 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
 
       {/* Suggested Quick Inquiries */}
       {messages.length <= 2 && (
-        <div className="px-4 py-2 border-t border-white/5 bg-white/[0.02] flex items-center gap-1.5 overflow-x-auto text-[11px]">
-          <span className="text-[10px] text-stone-500 uppercase tracking-wider shrink-0">Quick:</span>
+        <div className="px-4 py-2.5 border-t border-[#102F43]/10 bg-white flex items-center gap-2 overflow-x-auto text-[11px]">
+          <span className="text-[10px] text-[#102F43]/60 uppercase tracking-wider font-bold shrink-0">
+            {t.quickQuestionsTitle}:
+          </span>
           <button
             type="button"
             disabled={isSending}
-            onClick={() => handleSendMessage("What are the prices and configurations for 2 and 3 BHK?")}
-            className="shrink-0 rounded-full bg-white/5 px-2.5 py-1 text-stone-300 hover:bg-white/10 border border-white/10 disabled:opacity-40"
+            onClick={() => handleSendMessage(t.quickQuestion1)}
+            className="shrink-0 rounded-full bg-[#F7F8F4] px-3 py-1 text-[#102F43] hover:bg-[#E7F4F4] border border-[#102F43]/15 hover:border-[#13A99A] disabled:opacity-40 transition-colors font-medium cursor-pointer"
           >
-            Prices & 2/3 BHK
+            {t.quickQuestion1}
           </button>
           <button
             type="button"
             disabled={isSending}
-            onClick={() => handleSendMessage("Tell me about Prakriti Heights on SG Highway")}
-            className="shrink-0 rounded-full bg-white/5 px-2.5 py-1 text-stone-300 hover:bg-white/10 border border-white/10 disabled:opacity-40"
+            onClick={() => handleSendMessage(t.quickQuestion2)}
+            className="shrink-0 rounded-full bg-[#F7F8F4] px-3 py-1 text-[#102F43] hover:bg-[#E7F4F4] border border-[#102F43]/15 hover:border-[#13A99A] disabled:opacity-40 transition-colors font-medium cursor-pointer"
           >
-            Prakriti Heights
+            {t.quickQuestion2}
           </button>
           <button
             type="button"
             disabled={isSending}
-            onClick={() => handleSendMessage("What site visit slots are available this week?")}
-            className="shrink-0 rounded-full bg-white/5 px-2.5 py-1 text-stone-300 hover:bg-white/10 border border-white/10 disabled:opacity-40"
+            onClick={() => handleSendMessage(t.quickQuestion3)}
+            className="shrink-0 rounded-full bg-[#F7F8F4] px-3 py-1 text-[#102F43] hover:bg-[#E7F4F4] border border-[#102F43]/15 hover:border-[#13A99A] disabled:opacity-40 transition-colors font-medium cursor-pointer"
           >
-            Visit Availability
+            {t.quickQuestion3}
           </button>
         </div>
       )}
 
       {/* Message Composer */}
-      <div className="p-3 sm:p-4 border-t border-white/10 bg-white/5">
+      <div className="p-3 sm:p-4 border-t border-[#102F43]/10 bg-white">
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -755,43 +784,37 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
             value={inputMessage}
             onChange={(e) => setInputMessage(e.target.value)}
             disabled={isSending}
-            placeholder={
-              language === "HI"
-                ? "अपना प्रश्न यहाँ टाइप करें..."
-                : language === "GU"
-                ? "તમારો પ્રશ્ન અહીં લખો..."
-                : "Ask about configurations, pricing, or visit availability..."
-            }
-            className="flex-1 rounded-xl bg-white/5 px-3.5 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm text-white placeholder-stone-500 border border-white/10 focus:border-amber-400 focus:outline-hidden focus:ring-1 focus:ring-amber-400 disabled:opacity-50"
+            placeholder={t.inputPlaceholder}
+            className="flex-1 rounded-xl bg-[#F7F8F4] px-3.5 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm text-[#102F43] placeholder-[#102F43]/40 border border-[#102F43]/15 focus:border-[#13A99A] focus:outline-hidden focus:ring-1 focus:ring-[#13A99A] disabled:opacity-50 transition-colors"
           />
           <button
             type="submit"
             disabled={!inputMessage.trim() || isSending}
-            aria-label="Send message"
-            className="flex h-10 w-10 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-xl bg-amber-400 text-stone-950 hover:bg-amber-300 disabled:opacity-40 transition-colors focus:outline-hidden cursor-pointer shadow-xs"
+            aria-label={t.sendMessageAria}
+            className="flex h-10 w-10 sm:h-11 sm:w-11 shrink-0 items-center justify-center rounded-xl bg-[#13A99A] hover:bg-[#0f8c80] text-white disabled:opacity-40 transition-colors focus:outline-hidden cursor-pointer shadow-xs"
           >
             <Send className="h-4 w-4" />
           </button>
         </form>
 
         {/* Regulatory & Privacy Notice */}
-        <div className="mt-2.5 flex flex-col sm:flex-row items-center justify-between gap-1.5 sm:gap-2 text-[10px] text-stone-400 text-center sm:text-left">
-          <span>RERA Reg: DEMO-ONLY-NOT-VERIFIED</span>
+        <div className="mt-2.5 flex flex-col sm:flex-row items-center justify-between gap-1.5 sm:gap-2 text-[10px] text-[#102F43]/70 text-center sm:text-left font-medium">
+          <span>{t.reraRegBadge}</span>
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={handleEndSession}
-              className="text-stone-400 hover:text-stone-200 underline cursor-pointer"
+              className="text-[#102F43]/70 hover:text-[#102F43] underline cursor-pointer"
             >
-              End Chat
+              {t.endSessionButton}
             </button>
             <span>•</span>
             <button
               type="button"
               onClick={() => setShowOptOutConfirm(true)}
-              className="text-stone-400 hover:text-rose-400 underline cursor-pointer"
+              className="text-[#102F43]/70 hover:text-rose-600 underline cursor-pointer"
             >
-              Opt Out (DPDP)
+              {t.optOutButton}
             </button>
           </div>
         </div>
@@ -799,30 +822,28 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
 
       {/* DPDP Opt-Out Modal */}
       {showOptOutConfirm && (
-        <div className="absolute inset-0 bg-stone-950/80 backdrop-blur-xs flex items-center justify-center p-5 z-20">
-          <div className="rounded-2xl border border-rose-500/30 bg-stone-900 p-6 max-w-sm text-stone-100 shadow-2xl">
-            <div className="flex items-center gap-2 text-rose-400 mb-2">
+        <div className="absolute inset-0 bg-[#102F43]/70 backdrop-blur-xs flex items-center justify-center p-5 z-20">
+          <div className="rounded-2xl border border-rose-200 bg-white p-6 max-w-sm text-[#102F43] shadow-2xl">
+            <div className="flex items-center gap-2 text-rose-600 mb-2">
               <PhoneOff className="h-5 w-5" />
-              <h4 className="font-semibold text-sm">Withdraw Consent & Opt Out?</h4>
+              <h4 className="font-semibold text-sm">{t.optOutModalTitle}</h4>
             </div>
-            <p className="text-xs text-stone-300 leading-relaxed">
-              Under the Digital Personal Data Protection (DPDP) Act 2023, exercising your right to opt out will immediately revoke your active session and suppress any future automated communication.
-            </p>
+            <p className="text-xs text-[#102F43]/80 leading-relaxed">{t.optOutModalBody}</p>
             <div className="mt-5 flex items-center justify-end gap-3">
               <button
                 type="button"
                 onClick={() => setShowOptOutConfirm(false)}
-                className="rounded-xl px-3.5 py-1.5 text-xs text-stone-300 hover:bg-white/10 transition-colors"
+                className="rounded-xl px-3.5 py-1.5 text-xs font-semibold text-[#102F43]/70 hover:bg-[#F7F8F4] transition-colors cursor-pointer"
               >
-                Cancel
+                {t.optOutCancelButton}
               </button>
               <button
                 type="button"
                 disabled={isOptingOut}
                 onClick={handleOptOut}
-                className="rounded-xl bg-rose-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-rose-500 transition-colors disabled:opacity-50"
+                className="rounded-xl bg-rose-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-rose-500 transition-colors disabled:opacity-50 cursor-pointer shadow-xs"
               >
-                {isOptingOut ? "Processing..." : "Confirm Opt-Out"}
+                {isOptingOut ? t.optOutProcessingButton : t.optOutConfirmButton}
               </button>
             </div>
           </div>
@@ -832,12 +853,12 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
   );
 }
 
-function getWelcomeGreeting(lang: "EN" | "HI" | "GU", name: string): string {
+function getWelcomeGreeting(lang: Language, name: string): string {
   if (lang === "HI") {
-    return `नमस्ते ${name}! मैं ENQUIVO AI Concierge हूँ। मैं आपको अहमदाबाद के हमारे लक्जरी प्रोजेक्ट्स (प्रकृति हाइट्स और वास्तु एन्क्लेव) की 2 और 3 BHK कॉन्फ़िगरेशन, कीमतों और साइट विज़िट उपलब्धता की सत्यापित जानकारी दे सकता हूँ। मैं आपकी क्या मदद कर सकता हूँ?`;
+    return `नमस्ते ${name}! मैं ENQUIVO AI कंसीयर्ज हूँ। मैं आपको अहमदाबाद के हमारे लक्जरी प्रोजेक्ट्स (प्रकृति हाइट्स और वास्तु एन्क्लेव) की 2 और 3 BHK कॉन्फ़िगरेशन, कीमतों और साइट विज़िट उपलब्धता की सत्यापित जानकारी दे सकता हूँ। मैं आपकी क्या मदद कर सकता हूँ?`;
   }
   if (lang === "GU") {
-    return `નમસ્તે ${name}! હું ENQUIVO AI Concierge છું. હું તમને અમદાવાદના અમારા લક્ઝરી પ્રોજેક્ટ્સ (પ્રકૃતિ હાઇટ્સ અને વાસ્તુ એન્ક્લેવ) ની 2 અને 3 BHK વિગતો, કિંમતો અને સાઇટ મુલાકાત વિશે ચકાસાયેલ માહિતી આપી શકું છું. હું તમારી શું મદદ કરી શકું?`;
+    return `નમસ્તે ${name}! હું ENQUIVO AI કોન્સિયર્જ છું. હું તમને અમદાવાદના અમારા લક્ઝરી પ્રોજેક્ટ્સ (પ્રકૃતિ હાઇટ્સ અને વાસ્તુ એન્ક્લેવ) ની 2 અને 3 BHK વિગતો, કિંમતો અને સાઇટ મુલાકાત વિશે ચકાસાયેલ માહિતી આપી શકું છું. હું તમારી શું મદદ કરી શકું?`;
   }
   return `Hello ${name}! I am the ENQUIVO AI Concierge. I am grounded strictly in verified developer facts for Prakriti Heights (SG Highway) and Vaastu Enclave (Shela). Ask me about 2 & 3 BHK configurations, pricing (₹65L–₹1.2Cr), amenities, or site visit scheduling. How can I assist you today?`;
 }

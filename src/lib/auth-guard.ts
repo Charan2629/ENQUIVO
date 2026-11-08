@@ -1,4 +1,5 @@
-﻿import { cookies } from "next/headers";
+import { cookies } from "next/headers";
+import { connection } from "next/server";
 import { UserRole } from "@prisma/client";
 import {
   staffAuthService,
@@ -35,6 +36,14 @@ export async function getStaffSessionToken(req?: Request): Promise<string | unde
  * Returns null if missing or invalid.
  */
 export async function getStaffSession(req?: Request): Promise<ValidatedStaffSession | null> {
+  if (!req) {
+    try {
+      await connection();
+    } catch {
+      // Ignored outside Next.js request contexts (e.g. Vitest unit tests)
+    }
+  }
+
   const token = await getStaffSessionToken(req);
   if (!token) return null;
 

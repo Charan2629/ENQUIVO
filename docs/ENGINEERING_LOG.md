@@ -1232,6 +1232,152 @@ Marketing attribution in high-value real estate requires accountability across a
 
 ---
 
+### Final UI Polish & Responsive Optimization
+
+- **Date:** 2026-11-08 (Verified & Tested)
+- **Milestone & Task:** Final UI Polish, Accessible Mobile Navigation Drawer, Table Horizontal Overflow Containment, Next.js 16 Dynamic Session Boundary, and Server-Side Configurable `GEMINI_MODEL`.
+- **Git Commit Hash:** Pending commit
+
+#### 1. Context & Objectives
+Following the completion of Milestone 7, a comprehensive functional audit of the application across viewports revealed:
+1. **Mobile Portal Layout Defect:** Below `768px` (specifically on 390px mobile viewports), the desktop `<aside>` navigation remained 256px wide (`w-64`), causing the staff dashboard and sub-pages to overflow horizontally by 106px (`scrollWidth: 496px` vs `clientWidth: 390px`).
+2. **Missing Mobile Navigation Drawer:** On mobile viewports, staff had no accessible way to navigate between dashboard views without a mobile slide-over drawer.
+3. **Data Table Scrolling:** High-column tables (Channel Performance Ledger, Fact Sheet Table, Slot/Visits Manager, Lead Pipeline) required explicit minimum-width bounds and isolated horizontal scrolling containers to prevent layout expansion.
+4. **Next.js 16 Dynamic Boundary:** Next.js 16 emitted dynamic prerender warnings when evaluating dynamic session cookies during layout rendering without an explicit `await connection()` guard.
+5. **Configurable Gemini Model:** Hardcoded model strings in the AI service prevented runtime override during provider endpoint deprecations or high-load rate throttling without code modifications.
+
+#### 2. Architecture & Design Decisions
+- **Accessible Mobile Slide-Over Drawer (`PortalMobileDrawer` in `portal-nav.tsx` & `portal-header.tsx`):** Converted desktop `<aside>` to `hidden md:flex`. Implemented `<PortalMobileDrawer>` rendered via `<PortalHeader>` with `role="dialog"`, `aria-modal="true"`, and `aria-label="Staff Operations Navigation"`. Added hamburger button (`aria-label="Open navigation menu"`), accessible close button, body scroll locking (`document.body.style.overflow = "hidden"`), Escape key dismiss listener, and auto-dismiss on route navigation using `prevPathnameRef` and `useCallback` to prevent render loops.
+- **Responsive Header Badge:** Truncates long portfolio titles on mobile (`sm:hidden font-medium truncate` "Ahmedabad Portfolio" vs `hidden sm:inline` full portfolio title), eliminating header overflow.
+- **Contained Horizontal Table Scrolling:** Wrapped tabular data structures in `<div className="overflow-x-auto min-w-0">` with explicit minimum widths (`min-w-[680px]` to `min-w-[850px]`) on `<table>` elements across Fact Sheet, Visits/Slots Manager, Source Analytics Ledger, Handoff Queue, and Lead Pipeline.
+- **Next.js 16 Dynamic Request Boundary:** Added `await connection()` from `next/server` inside `src/app/(portal)/layout.tsx` before evaluating `getStaffSession()`, cleanly declaring dynamic request-time execution and silencing prerender warnings.
+- **Server-Side Configurable `GEMINI_MODEL` (`src/services/ai/ai.service.ts`):** Exported `getGeminiModelName(): string` reading `process.env.GEMINI_MODEL?.trim() || "gemini-3.8-flash"`. Updated `.env.example` and `deployment.md`. Enables zero-code model fallback during provider-level rate limits or incident recovery.
+
+#### 3. Files Created or Modified
+- `src/components/portal/portal-nav.tsx` — Desktop sidebar `hidden md:flex`; exported `PortalMobileDrawer` with scroll lock, Escape dismiss, and route transition closure.
+- `src/components/portal/portal-header.tsx` — Added hamburger menu button, truncated location badge on mobile, hidden timeline anchor below `lg`, and wired `PortalMobileDrawer` with memoized `handleCloseMobileNav`.
+- `src/app/(portal)/layout.tsx` — Added `await connection()` and adjusted small-viewport container padding (`p-3.5 sm:p-5 md:p-8 min-w-0 overflow-y-auto`).
+- `src/components/portal/fact-sheet/fact-sheet-client.tsx` — Added `overflow-x-auto min-w-0` wrapper and `min-w-[680px]` table constraint.
+- `src/components/portal/visits/visits-manager-client.tsx` — Added `overflow-x-auto min-w-0` wrappers and `min-w-[720px]` table constraints for visits and slots.
+- `src/components/portal/sources/source-analytics-client.tsx` — Added `overflow-x-auto min-w-0` wrapper and `min-w-[850px]` table constraint for channel performance ledger.
+- `src/components/portal/handoffs/handoff-queue-client.tsx` — Added `overflow-x-auto min-w-0` wrapper and `min-w-[720px]` table constraint.
+- `src/components/portal/leads/lead-pipeline-client.tsx` — Added `overflow-x-auto min-w-0` wrapper and `min-w-[720px]` table constraint.
+- `src/app/(buyer)/concierge/page.tsx` — Added dedicated statutory compliance alert box displaying `RERA Reg: DEMO-ONLY-NOT-VERIFIED`.
+- `src/services/ai/ai.service.ts` — Added `getGeminiModelName()` resolving `GEMINI_MODEL` with default `gemini-3.8-flash`.
+- `tests/unit/ai-error-handling.test.ts` — Added 3 unit tests for `getGeminiModelName()`.
+- `.env.example` & `deployment.md` — Added `GEMINI_MODEL` configuration documentation.
+- `docs/PROJECT_STATE.md` — Updated verification tables and milestone tracking.
+
+#### 4. Verification Performed & Results
+- `npx tsc --noEmit` — ✅ PASS (0 errors across entire workspace).
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings across all files).
+- `npm test` — ✅ PASS (206/206 unit tests passed across 13 files).
+- `npm run test:integration` — ✅ PASS (100/100 integration tests passed across 12 files against Neon test branch `ep-mute-butterfly-b3a54tpa`).
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 32 static & dynamic routes compiled).
+- `comprehensive_regression_verify.mjs` — ✅ PASS:
+  - 64/64 page-viewport checks passed across Desktop (1440x900), Laptop (1280x800), Tablet (768x1024), and Mobile (390x844).
+  - 0px horizontal overflow across all tested routes (`scrollWidth === clientWidth`).
+  - Mobile slide-over drawer: hamburger button visible, `role="dialog"` container opens, `document.body` scroll locks (`overflow = "hidden"`), dismisses cleanly on Escape and backdrop click, and scroll restores.
+  - Live AI Concierge interaction: verified session acquisition, fast 537ms response time with fact-grounded citation metadata.
+
+---
+
+## Dedicated Premium Visual Transformation & Complete Buyer Localization
+
+- **Date:** 2026-11-08 (Completed at 20:25 IST)
+- **Milestone & Task:** Dedicated Premium Visual Transformation & Complete Buyer Localization (Awwwards-inspired architectural design system, Three.js 3D residential massing scene, full EN/HI/GU translation dictionary, coordinated Deep Ocean & Jade Teal staff portal shell).
+- **Git Commit Hash:** Pending developer approval.
+
+### 1. Problem & Requirements Addressed
+While the initial responsive polish resolved mobile structural overflow (0px overflow, slide-over navigation drawer), the visual appearance remained utilitarian (dark slate/stone surfaces). The objectives of this milestone were:
+1. **Premium Brand Identity Overhaul:** Elevate ENQUIVO to an Awwwards-inspired luxury real-estate technology aesthetic using a coordinated color palette:
+   - Deep Ocean (`#102F43`): Primary dark anchor, authoritative headers, luxury card accents.
+   - Jade Teal (`#13A99A`): Vibrant accent, interactive actions, live status, CTAs.
+   - Champagne Gold (`#D6B56D`): Luxury accents, verified fact badges, timeline markers.
+   - Pale Aqua (`#E7F4F4`): Delicate tint surfaces, AI bubble fills, statutory notice backgrounds.
+   - Porcelain (`#F7F8F4`): Clean, luminous surfaces for buyer-facing experiences.
+   - Dark Blue-Green (`#183442`): Secondary dark elevation, card depths, sidebar footers.
+2. **Signature 3D Architectural Massing Scene:** Create a 3D isometric representation of the two Ahmedabad developments (stepped panoramic high-rise of Prakriti Heights and biophilic central courtyard of Vaastu Enclave) using Three.js without heavy video dependencies, with damped pointer tracking and `prefers-reduced-motion` compliance.
+3. **100% Comprehensive Buyer Localization (EN/HI/GU):** Eliminate hardcoded English strings on the buyer concierge intake form, consent affirmations, quick inquiry chips, typing indicators, error alerts, and opt-out modals so toggling between English, Hindi, and Gujarati dynamically renders authentic native scripts.
+4. **Staff Portal Visual Cohesion:** Harmonize the staff sidebar, header, KPI metric cards, and Recharts visualizations with the Deep Ocean and Jade Teal design system while preserving responsive table scrolling and anti-IDOR data security.
+
+### 2. Architecture & Design Decisions
+- **Vanilla Three.js in Next.js 16 (`src/components/buyer/architectural-scene-3d.tsx`):** Implemented an isometric residential scene using vanilla `three` (`^0.174.0`) inside a `useEffect` hook with direct canvas binding. Avoided React 19 peer-dependency conflicts associated with `@react-three/fiber`. Features procedural stepped tower geometries, mullions in Champagne Gold, glass balconies in Pale Aqua, central water feature in Jade Teal, dual-axis pointer parallax, and clean WebGL failure fallbacks.
+- **Centralized Trilingual Dictionary (`src/lib/i18n/concierge-translations.ts`):** Exported `CONCIERGE_TRANSLATIONS` mapping all user-facing strings across `EN`, `HI`, and `GU`. Validated via automated unit tests (`tests/unit/buyer-localization.test.ts`) enforcing complete dictionary key parity, authentic Devanagari script (`\u0900-\u097F`) for Hindi, and authentic Gujarati script (`\u0A80-\u0AFF`) for Gujarati.
+- **Palette Alignment in Buyer & Staff Portals:** Replaced dark stone surfaces on public pages with luminous Porcelain surfaces (`#F7F8F4`), aligned AI bubbles with Pale Aqua (`#E7F4F4`), styled buyer bubbles with Deep Ocean (`#102F43`), and updated staff navigation and Recharts bar colors with Jade Teal (`#13A99A`) and Champagne Gold (`#D6B56D`).
+
+### 3. Files Created or Modified
+- `src/lib/design-tokens.ts` — Authoritative brand design tokens (`PALETTE`, `THEME_SHADOWS`).
+- `src/app/globals.css` — Integrated CSS custom properties inside Tailwind v4 `@theme inline`.
+- `src/components/buyer/architectural-scene-3d.tsx` — Three.js isometric architectural visualization with fallback.
+- `src/components/buyer/public-nav.tsx` — Porcelain background, Deep Ocean typography, Jade Teal CTAs.
+- `src/components/buyer/hero-section.tsx` — Editorial architectural hero with verified unit and pricing callouts.
+- `src/components/buyer/project-showcase.tsx` — Architectural presentation cards for Prakriti Heights & Vaastu Enclave.
+- `src/components/buyer/why-choose-us.tsx` — Verified platform standards in Jade Teal and Champagne Gold.
+- `src/components/buyer/concierge-cta-section.tsx` — Deep Ocean concierge launch banner.
+- `src/components/buyer/public-footer.tsx` — Deep Ocean footer with regulatory notices.
+- `src/app/page.tsx` — Integrated 3D scene section (`#architecture`) and coordinated redesigned sections.
+- `src/lib/i18n/concierge-translations.ts` — Comprehensive EN/HI/GU translation dictionary (50+ keys).
+- `src/components/buyer/concierge-chat.tsx` — Localized intake form, active chat, and modal styling.
+- `src/app/(buyer)/concierge/page.tsx` — Porcelain and Deep Ocean concierge layout.
+- `src/components/portal/portal-nav.tsx` — Deep Ocean desktop sidebar and slide-over mobile drawer.
+- `src/components/portal/portal-header.tsx` — Deep Ocean sticky header with Jade Teal location badge.
+- `src/app/(portal)/layout.tsx` — Dark Blue-Green portal background with dynamic request boundary.
+- `src/app/(portal)/dashboard/page.tsx` — Deep Ocean KPI overview cards and quick action modules.
+- `src/components/portal/sources/source-analytics-client.tsx` — Recharts volume bars aligned to Jade Teal and Champagne Gold.
+- `tests/unit/buyer-localization.test.ts` — 6 unit tests verifying translation coverage and script bounds.
+- `scripts/capture-visual-audit.mjs` — Automated CDP visual capture script.
+
+### 4. Verification Performed & Results
+- `npx tsc --noEmit` — ✅ PASS (0 errors across workspace).
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings across all files).
+- `npm test` — ✅ PASS (212/212 unit tests passed across 14 files, including 6 new localization tests).
+- `npm run test:integration` — ✅ PASS (100/100 integration tests passed across 12 files against Neon test branch `ep-mute-butterfly-b3a54tpa`).
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 32 static & dynamic routes compiled).
+- `node scripts/capture-visual-audit.mjs` — ✅ PASS (13 visual screenshots captured across desktop and mobile viewports).
+
+---
+
+## Milestone Execution: Staff Authentication Bug Fix & Navigation Hardening
+
+### 1. Context & Problem Statement
+During final acceptance testing of the staff portal, a critical defect was identified:
+1. When submitting valid staff credentials on `/login`, the submit button remained in an indefinite loading state with an active spinner.
+2. The browser either stayed on `/login` or stalled without transitioning to `/dashboard`, leaving entered credentials populated.
+3. Browser Back navigation was broken: attempting to navigate backwards resulted in history trapping on `/login` or infinite redirect loops.
+
+### 2. Root Cause Analysis
+1. **Next.js 16 Dynamic Boundary Collision:** Server Component pages in Next.js 16 (App Router + Turbopack + Cache Components) undergo prerendering. When `/dashboard` evaluated `requireStaffSession()`, `StaffAuthService.verifySessionToken()` checked `Date.now() > payload.expiresAt`. Next.js 16 flagged `Date.now()` as an unstable value during prerender (`blocking-prerender-current-time`), aborting the RSC stream because no dynamic request boundary (`await connection()`) had been signaled.
+2. **Client Router Concurrency Collision:** In `login/page.tsx`, `handleSubmit` fired `router.push(from)` and `router.refresh()` simultaneously. In Next.js App Router, `router.refresh()` requests an update for the *current* route tree (`/login`) while `router.push` attempts to transition to the separate `(portal)` route group, canceling the transition. Because `setLoading(false)` was only in error catch blocks, the button spinner stayed active indefinitely.
+3. **History Stack Pollution:** `router.push(from)` pushed `/dashboard` after `/login` in history. Clicking Back from `/dashboard` returned to `/login`. Without an authenticated redirect on `/login`, the user was trapped in the login flow.
+
+### 3. Architecture & Resolution
+1. **Request-Time Dynamic Boundary in Auth Guard:** Added `await connection()` inside `getStaffSession(req?: Request)` in `src/lib/auth-guard.ts` (when `!req`), ensuring that any Server Component calling `getStaffSession()`, `requireStaffSession()`, or `requireSalesHead()` automatically establishes the dynamic request-time boundary before session verification executes.
+2. **Atomic Navigation via `window.location.replace`:** Replaced `router.push(from)` + `router.refresh()` with `window.location.replace(from)`. This replaces the `/login` history entry with `/dashboard`, guarantees a fresh document request with the newly set `Set-Cookie` header, and ensures browser Back returns to the preceding public page (`/`).
+3. **Server Component `/login` Authentication Guard:** Converted `src/app/(auth)/login/page.tsx` into a Server Component that checks `getStaffSession()` at request-time. If an authenticated user visits `/login`, the server immediately issues an HTTP 307 redirect to `/dashboard` before rendering any client markup, preventing redirect loops.
+4. **Colocated Client Component (`login-form.tsx`):** Isolated interactive form state into `src/app/(auth)/login/login-form.tsx` with double-submit protection (`if (loading) return;`), luxury design tokens, and credential input preservation upon 401 error.
+
+### 4. Verification & Automated Real-Browser Audit
+- **CDP Headless Chrome Suite (`scripts/verify-staff-auth-full.mjs`):** Verified 9 test scenarios yielding 11 distinct assertions:
+  1. Unauthenticated `/dashboard` redirect to `/login` (PASS).
+  2. Sales Head login to `/dashboard` (PASS).
+  3. Browser Back navigation to homepage without loops (PASS).
+  4. Authenticated `/login` access redirected to `/dashboard` (PASS).
+  5. Session persistence across hard refresh (PASS).
+  6. Sales Head access to `/dashboard/fact-sheet` (PASS).
+  7. Logout revokes session and redirects to `/login` (PASS).
+  8. Post-logout access to `/dashboard` blocked (PASS).
+  9. Sales Executive login to `/dashboard` (PASS).
+  10. Sales Exec RBAC blocks Fact Sheet Governance with Access Denied (PASS).
+  11. Invalid credentials shows error, resets loading, keeps email (PASS).
+- `npx tsc --noEmit` — ✅ PASS (0 errors).
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings).
+- `npm test` — ✅ PASS (212/212 unit tests across 14 files).
+- `npm run test:integration` — ✅ PASS (100/100 integration tests across 12 files against Neon PostgreSQL).
+- `npm run build` — ✅ PASS (32 routes compiled cleanly).
+
+---
+
 ## Unverified Historical Information Register
 
 In accordance with strict verification rules, the following details cannot be independently verified from the repository git log and are explicitly recorded as unverified assumptions:

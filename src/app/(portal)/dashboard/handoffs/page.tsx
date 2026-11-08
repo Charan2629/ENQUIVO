@@ -1,4 +1,5 @@
 import React from "react";
+import { connection } from "next/server";
 import { UserRole } from "@prisma/client";
 import { requireStaffSession } from "@/lib/auth-guard";
 import { handoffService } from "@/services/handoff/handoff.service";
@@ -8,6 +9,7 @@ import { Headphones, Compass } from "lucide-react";
 export const instant = false;
 
 export default async function HandoffsPage() {
+  await connection();
   const session = await requireStaffSession();
   const { user } = session;
 

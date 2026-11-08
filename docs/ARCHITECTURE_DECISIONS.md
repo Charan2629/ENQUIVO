@@ -489,3 +489,51 @@ Site visits represent high-intent buyer commitments. The system must prevent ove
 - **UI Components:** `src/app/(portal)/dashboard/visits/page.tsx`, `src/components/portal/visits/visits-manager-client.tsx`, `src/components/portal/visits/create-slot-modal.tsx`, `src/components/portal/visits/edit-slot-modal.tsx`, `src/components/portal/visits/record-attendance-modal.tsx`.
 - **Unit Tests:** `tests/unit/slot-management.test.ts` (15 tests passed), `tests/unit/visit-attendance.test.ts` (11 tests passed).
 - **Integration Tests:** `tests/integration/visit-attendance.test.ts` (9 tests passed against isolated Neon PostgreSQL test branch: validates slot creation, modification guards, booking, anti-IDOR scoping, attendance recording, dynamic `VISITED` lifecycle transition, and duplicate recording rejection).
+
+
+---
+
+## ADR-012: Source Attribution Integrity, Spend-Efficiency Metrics, and Role Privacy Scoping
+
+- **Status:** Accepted
+- **Date:** 2026-11-08
+- **Deciders:** Principal Engineering Mentor & Implementation Partner
+
+### Context
+Real estate marketing requires clear accountability across acquisition channels (property portals, social media advertising, website search, outdoor billboards). When leads re-engage through multiple campaigns or phone numbers merge, attributing credit accurately without inflating lead volume is essential. Furthermore, commercial sales revenue and transaction closures are handled in enterprise ERP and financial accounting systems rather than in CRM databases, making synthetic ROAS metrics misleading. Finally, corporate marketing budgets and channel spend allocations must not be leaked to individual sales executives.
+
+### Alternatives Considered
+1. **Fabricating Commercial Sales Revenue / Synthetic ROAS:** Inventing closed unit sales and deal prices inside the CRM to compute return-on-ad-spend (ROAS). *Rejected:* Commercial closing revenue is managed in external ERPs; fabricating closing numbers violates accounting reality and domain fidelity. Instead, the system computes verified spend-efficiency indicators: Cost Per Lead (CPL), Cost Per Attended Visit (CPV), lead-to-visit rates, and show-up rates.
+2. **Client-Side Spend Concealment:** Sending full marketing spend over the wire and hiding it with CSS/JavaScript for `SALES_EXEC` users. *Rejected:* Critical information disclosure vulnerability; any sales representative inspecting network traffic could view corporate marketing budgets.
+3. **Multi-Touch Aggregation as Lead Total:** Counting every campaign interaction in `LeadSourceEvent` as a distinct lead. *Rejected:* Grossly inflates lead count and distorts conversion funnel calculations.
+
+### Decision
+1. **First-Touch Attribution Model:** The primary performance ledger groups master leads by `Lead.source`. When duplicate phone numbers merge, the original acquisition source is immutable, ensuring each prospect is counted once.
+2. **Multi-Touch Engagement Distribution:** Channel touchpoints recorded in `LeadSourceEvent` are surfaced as a secondary distribution, illustrating multi-channel velocity without polluting distinct lead totals.
+3. **Spend-Efficiency Calculations:**
+   - **Cost Per Lead (CPL):** `spendRupees / totalLeads` (returns `null` when leads = 0).
+   - **Lead-to-Visit Rate:** `(distinctLeadsWithVisits / totalLeads) * 100`.
+   - **Lead-to-Attended Rate:** `(distinctLeadsWithAttendedVisits / totalLeads) * 100`.
+   - **Show-Up Rate:** `(attendedVisits / (attendedVisits + noShowVisits)) * 100` (strictly excludes future bookings and cancelled visits).
+   - **Cost Per Attended Visit (CPV):** `spendRupees / attendedVisits` (returns `null` when attended visits = 0).
+4. **Server-Side Role Privacy Scoping:**
+   - `SALES_HEAD`: Complete organization-wide visibility across all leads, visits, and corporate channel spend (`isSpendRestricted = false`).
+   - `SALES_EXEC`: Relational scoping strictly restricted to leads assigned to that executive (`lead.conversations.some.handoff.assignedToId === user.id`). Spend metrics are completely redacted at the service layer (`isSpendRestricted = true`, `spendRupees = null`, `cpl = null`, `cpv = null`), preventing budget disclosure while preserving conversion analysis for assigned leads.
+5. **AI First-Response Velocity Metric & Monthly Reporting Period:** Computes the median response time `firstResponseAt - createdAt` in minutes directly from persisted timestamps against the 14-hour assignment baseline; supports monthly reporting-period selection (aligned with `SourceSpend.monthYear`) and all-recorded-time aggregation, avoiding artificial spend proration.
+
+### Trade-offs & Consequences
+- **Positive:**
+  - Zero schema migrations required (14-model PostgreSQL schema already supports `SourceSpend`, `Lead`, `LeadSourceEvent`, and `SiteVisit`).
+  - Zero information disclosure: marketing spend never leaves the server when queried by sales executives.
+  - Complete mathematical safety: zero-lead and zero-visit cases return `null` instead of throwing `NaN` or dividing by zero.
+  - Transparent disclaimers regarding ERP segregation and illustrative demo allocations.
+- **Negative:**
+  - True financial ROI / ROAS requires an external integration with the developer's ERP/accounting system.
+
+### Code & Test Evidence
+- **Domain Service:** `src/services/analytics/source-analytics.service.ts` (`getSourceAnalytics`, `getStaffAnalyticsLeadScope`).
+- **Validation Schemas:** `src/lib/validations/analytics.ts` (`sourceAnalyticsQuerySchema`, `LEAD_SOURCE_META`).
+- **API Route:** `src/app/api/sources/analytics/route.ts` (`GET /api/sources/analytics`).
+- **UI Components:** `src/app/(portal)/dashboard/sources/page.tsx`, `src/components/portal/sources/source-analytics-client.tsx`.
+- **Unit Tests:** `tests/unit/source-analytics.test.ts` (12 tests passed: validates query schema, lead source metadata, role scoping helpers, CPL/CPV calculations, show-up rates, zero-lead edge cases, and Sales Exec spend privacy).
+- **Integration Tests:** `tests/integration/source-analytics.test.ts` (2 tests passed against isolated Neon PostgreSQL test branch: validates live database aggregation for `SALES_HEAD`, multi-touch breakdown, relational scoping for `SALES_EXEC`, and spend privacy enforcement).

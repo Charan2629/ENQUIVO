@@ -408,3 +408,63 @@ export interface AnalyticsMetrics {
   showUpRate: number;
   costPerVisitBySource: Record<LeadSource, number>;
 }
+
+export interface SourcePerformanceItem {
+  source: LeadSource;
+  label: string;
+  color: string;
+  spendRupees: number | null;
+  spendPaise: string | null;
+  totalLeads: number;
+  leadsPercentage: number;
+  costPerLeadRupees: number | null;
+  bookedVisitsCount: number;
+  distinctLeadsWithVisitsCount: number;
+  attendedVisitsCount: number;
+  distinctLeadsWithAttendedVisitsCount: number;
+  noShowVisitsCount: number;
+  cancelledVisitsCount: number;
+  leadToVisitRate: number;
+  leadToAttendedRate: number;
+  showUpRate: number | null;
+  costPerAttendedVisitRupees: number | null;
+  costPerBookedVisitRupees: number | null;
+  totalTouchpointEvents: number;
+}
+
+export interface SourceAnalyticsSummary {
+  totalSpendRupees: number | null;
+  totalDistinctLeads: number;
+  overallCPLRupees: number | null;
+  totalBookedVisits: number;
+  totalAttendedVisits: number;
+  overallLeadToVisitRate: number;
+  overallLeadToAttendedRate: number;
+  overallCPVAttendedRupees: number | null;
+  overallCPVBookedRupees: number | null;
+  firstResponseTimeMedianMinutes: number | null;
+  industryBaselineMinutes: number;
+  isRevenueCaptured: false;
+  revenueDisclaimer: string;
+  isSpendRestricted: boolean;
+}
+
+export interface MultiTouchSourceBreakdown {
+  source: LeadSource;
+  label: string;
+  count: number;
+  percentage: number;
+}
+
+export interface SourceAnalyticsResponse {
+  summary: SourceAnalyticsSummary;
+  sources: SourcePerformanceItem[];
+  multiTouchBreakdown: MultiTouchSourceBreakdown[];
+  availableMonths: string[];
+  filterApplied: {
+    monthYear?: string;
+    startDate?: string;
+    endDate?: string;
+    projectId?: string;
+  };
+}

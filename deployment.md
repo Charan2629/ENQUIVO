@@ -243,7 +243,7 @@ npm run test:coverage
 # npm run test:e2e:ui
 ```
 
-> **Current state:** `npm test` — ✅ CONFIGURED & PASSING (191/191 unit tests across 12 files). `npm run test:integration` — ✅ CONFIGURED & PASSING (98/98 integration tests across 11 files against isolated Neon test branch). `npm run test:e2e` — NOT CONFIGURED (configured in Milestone 7).
+> **Current state:** `npm test` — ✅ CONFIGURED & PASSING (203/203 unit tests across 13 files). `npm run test:integration` — ✅ CONFIGURED & PASSING (100/100 integration tests across 12 files against isolated Neon test branch). `npm run test:e2e` — NOT CONFIGURED.
 
 ---
 
@@ -312,4 +312,3 @@ Planned CI checks on every pull request:
 | Inngest events not appearing | Confirm Inngest dev server is running on port 8288 and `INNGEST_EVENT_KEY` is set |
 | TypeScript errors after adding packages | Run `npx prisma generate` if errors are in `@prisma/client`, then `npx tsc --noEmit` |
 | Build fails with `GEMINI_API_KEY` | Ensure key is NOT in a `NEXT_PUBLIC_*` variable — it must stay server-side only |
-

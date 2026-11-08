@@ -1,33 +1,23 @@
-﻿import React from "react";
+import React from "react";
 import { requireStaffSession } from "@/lib/auth-guard";
-import { BarChart3 } from "lucide-react";
+import { sourceAnalyticsService } from "@/services/analytics/source-analytics.service";
+import { SourceAnalyticsClient } from "@/components/portal/sources/source-analytics-client";
 
 export const instant = false;
 
 export default async function SourcesPage() {
-  await requireStaffSession();
+  const session = await requireStaffSession();
+
+  const initialData = await sourceAnalyticsService.getSourceAnalytics(
+    { monthYear: "2026-11" },
+    session.user
+  );
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center">
-          <BarChart3 className="w-5 h-5" />
-        </div>
-        <div>
-          <h1 className="text-xl font-bold text-white">Source Attribution & Performance</h1>
-          <p className="text-xs text-slate-400">Marketing spend ROI, cost per lead, and visit conversion analytics</p>
-        </div>
-      </div>
-
-      <div className="p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 mb-3">
-          Milestone 6 • Phase 5
-        </div>
-        <h2 className="text-lg font-semibold text-white">Source Performance Analytics Coming in Phase 5</h2>
-        <p className="text-sm text-slate-400 max-w-md mx-auto mt-2">
-          First-touch attribution analytics across Property Portal, Social Media Ads, Website, and Hoarding Calls with sample-size safeguards.
-        </p>
-      </div>
-    </div>
+    <SourceAnalyticsClient
+      userRole={session.user.role}
+      userName={session.user.name}
+      initialData={initialData}
+    />
   );
 }

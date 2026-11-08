@@ -1165,6 +1165,73 @@ Milestone 6.4 completes the administrative governance workflows required for the
 
 ---
 
+### Milestone 7: Source Attribution & ROI Dashboard
+
+- **Date:** 2026-11-08 (Verified & Tested)
+- **Milestone & Task:** Milestone 7 — Source Attribution & Marketing ROI Dashboard (`/dashboard/sources`), First-Touch Attribution Engine, Spend-Efficiency Metrics (CPL, CPV, conversion rates, show-up rates), Multi-Touch Engagement Velocity, AI Response Time Tracking vs 14h Baseline, Recharts Visualizations, and Server-Side Spend Privacy Scoping (`SALES_HEAD` vs `SALES_EXEC`).
+- **Git Commit Hash:** Pending commit
+
+#### 1. Context & Objectives
+Marketing attribution in high-value real estate requires accountability across acquisition channels: property portals (99acres, MagicBricks), social media advertising (Meta, Google), direct website search, and outdoor billboard hoardings. Key engineering objectives:
+1. **First-Touch Attribution Engine:** Accurately credit the initial channel that generated each distinct lead without double-counting when duplicate phone merges append interaction records.
+2. **Spend-Efficiency vs. Enterprise ERP Segregation (ADR-012):** Compute verified unit acquisition metrics: Cost Per Lead (CPL), Cost Per Booked Visit, Cost Per Attended Visit (CPV), Lead-to-Visit Rate, and Visit Show-Up Rate. Prohibit fabricating synthetic unit sales revenue or closed deal prices, explicitly documenting that commercial transaction revenues are governed in enterprise ERP ledgers.
+3. **Multi-Touch Velocity:** Present secondary engagement touchpoints from `LeadSourceEvent` to reveal multi-channel journey activity without inflating unique lead totals.
+4. **AI First-Response Velocity:** Measure and display median first response times against the 14-hour real estate industry baseline.
+5. **Server-Side Role Privacy Scoping:** Provide `SALES_HEAD` with full visibility across portfolio leads and company spend; strictly scope `SALES_EXEC` to their assigned leads, while redacting marketing spend figures (`spendRupees: null`, `cpl: null`, `cpv: null`) at the service layer to prevent corporate budget disclosure.
+6. **Data Visualizations:** Deliver an interactive client interface utilizing Recharts (first-touch volume vs attended visits bar chart, marketing spend allocation donut, CPL vs CPV comparison chart, channel performance ledger table, and statutory disclaimer banners).
+
+#### 2. Architecture & Design Decisions
+- **First-Touch Attribution Invariant:** In `SourceAnalyticsService.getSourceAnalytics()`, master leads are grouped strictly by `Lead.source`. Even when repeat inquiries append rows to `LeadSourceEvent`, the primary lead count remains 100% deduplicated.
+- **Mathematical Safety & Zero Division Defense:** When calculating CPL or CPV for unfunded channels (e.g., Referral, Other) or channels with zero leads or zero visits, the service returns `null` instead of `NaN` or `Infinity`. Show-up rate is calculated as `(attended / (attended + noShow)) * 100`, strictly excluding future bookings and cancelled visits.
+- **Server-Side Spend Privacy Scoping:** If `staffUser.role === UserRole.SALES_EXEC`, `SourceAnalyticsService` sets `isSpendRestricted = true` and skips querying `SourceSpend`. The response sets all spend and CPL/CPV fields to `null`, ensuring confidential corporate marketing budgets are never serialized or transmitted to sales representatives over the network.
+- **Client-Side Rendering Resilience for Recharts in Next.js 16 / React 19:** Recharts relies on DOM measurements (`ResponsiveContainer`) that can cause server/client hydration mismatches. Rather than calling `setState` inside an effect (which violates Next.js 16 / React 19 lint rules against cascading renders), the client component uses `useSyncExternalStore(emptySubscribe, () => true, () => false)` to detect mounting cleanly and safely.
+- **Zero Schema Migrations:** All metrics and multi-touch events map directly to existing PostgreSQL models (`SourceSpend`, `Lead`, `LeadSourceEvent`, `SiteVisit`).
+
+#### 3. Files Created or Modified
+- `package.json` & `package-lock.json` — Added `recharts` (`^3.10.1`) for data visualization.
+- `src/lib/validations/analytics.ts` — Authored `sourceAnalyticsQuerySchema` (`monthYear`, `startDate`, `endDate`, `projectId`) and `LEAD_SOURCE_META` mapping for all 6 sources with labels, descriptions, and brand hex colors.
+- `src/types/index.ts` — Added analytics interfaces: `SourcePerformanceItem`, `SourceAnalyticsSummary`, `MultiTouchSourceBreakdown`, and `SourceAnalyticsResponse`.
+- `src/services/analytics/source-analytics.service.ts` — Implemented `SourceAnalyticsService`: monthly reporting-period selection (aligned with `SourceSpend.monthYear`), role scoping (`getStaffAnalyticsLeadScope`), spend aggregation, first-touch grouping, conversion rates, median response time calculation, and multi-touch touchpoint distribution.
+- `src/app/api/sources/analytics/route.ts` — GET API endpoint with `requireStaffSession`, Zod search parameter validation, and role error handling.
+- `src/components/portal/sources/source-analytics-client.tsx` — Full-featured dashboard client: month selector, 6 KPI cards, Recharts bar charts and donut chart, comprehensive channel ledger table, and assumption/disclaimer banners.
+- `src/app/(portal)/dashboard/sources/page.tsx` — Protected server component mounting the analytics dashboard with `requireStaffSession`, pre-fetching initial data on the server with `instant = false`.
+- `tests/unit/source-analytics.test.ts` — 12 unit tests covering query validation, lead source metadata, role scoping helpers, CPL/CPV calculations, show-up rates, zero-lead edge cases, and Sales Exec spend privacy.
+- `tests/integration/source-analytics.test.ts` — 2 integration tests against isolated Neon PostgreSQL test branch verifying live database aggregation for `SALES_HEAD`, multi-touch breakdown, relational scoping for `SALES_EXEC`, and spend privacy enforcement.
+- `docs/ARCHITECTURE_DECISIONS.md` — Added ADR-012 (Source Attribution Integrity, Spend-Efficiency Metrics, and Role Privacy Scoping).
+- `docs/TDD_DRAFT.md` — Updated Decision Log (D-033), Assumptions Register (A-011, A-012), and Milestone Completion Tracker.
+- `docs/PROJECT_STATE.md` — Updated operational state, test counts (203 unit, 100 integration), and next actions.
+- `deployment.md` — Updated test counts and documented test execution.
+
+#### 4. Verification Performed & Results
+- `npm test` — ✅ PASS (203/203 unit tests passed across 13 files in 6.48s, including 12 new unit tests in `source-analytics.test.ts`).
+- `npm run test:integration` — ✅ PASS (100/100 integration tests passed across 12 files against Neon test branch `ep-mute-butterfly-b3a54tpa` in 171.97s, including 2 new integration tests in `source-analytics.test.ts`).
+- `npx tsc --noEmit` — ✅ PASS (0 errors across entire workspace).
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings across all files).
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 32 static & dynamic routes compiled, including `/api/sources/analytics` and `/dashboard/sources`).
+- `git diff --check` — ✅ PASS (0 trailing whitespace or formatting errors).
+
+#### 5. Division of Responsibility & AI Collaboration
+- **Developer Contribution:** Enforced Milestone 7 scope boundary; prohibited fabricating synthetic property sales revenue or deal closing numbers; mandated presenting verified spend-efficiency indicators (CPL, CPV, conversion rates) with clear ERP segregation notices; directed strict server-side spend privacy scoping for `SALES_EXEC`; mandated first-touch attribution immutability on duplicate phone merges; and reviewed code and tests.
+- **AI Assistance:** Implemented `SourceAnalyticsService`, authored Zod validation schemas, created the REST API route with CSRF and auth protection, developed the interactive Recharts client component (`SourceAnalyticsClient`), authored 12 unit tests and 2 integration tests against the isolated Neon test branch, resolved Next.js 16 Turbopack segment configuration and React 19 hook linting, and synchronized project documentation.
+
+#### 6. Interview Preparation & Deep-Dive
+- **Code Walkthrough:**
+  - `src/services/analytics/source-analytics.service.ts`: `getSourceAnalytics` accepts query parameters and staff user context. It derives lead role scoping via `getStaffAnalyticsLeadScope`. If the user is `SALES_HEAD`, it queries `SourceSpend` for the requested `monthYear` and computes spend per channel. If `SALES_EXEC`, it completely skips spend queries and sets `isSpendRestricted = true`. It queries `Lead` records with their `SiteVisit` relations, groups leads by `lead.source` (first touch), and iterates through valid visits, computing `bookedVisitsCount`, `attendedVisitsCount`, and `noShowVisitsCount`. It computes CPL, CPV, and conversion rates with division-by-zero guards, calculates median response time from `firstResponseAt - createdAt`, aggregates `LeadSourceEvent` for multi-touch breakdown, and returns a structured response.
+  - `src/app/api/sources/analytics/route.ts`: Extracts search params, parses them through `sourceAnalyticsQuerySchema`, verifies the staff session via `requireStaffSession`, and calls `sourceAnalyticsService.getSourceAnalytics`.
+  - `src/components/portal/sources/source-analytics-client.tsx`: Renders 6 KPI cards (Spend, Leads, CPL, Booked Visits, Attended Visits, Response Time), Recharts visualizations (Lead Volume vs Attended Visits, Spend/Touchpoint distribution, CPL vs CPV comparison), a detailed ledger table, and statutory disclaimer notices.
+- **Trade-off Defense (First-Touch Attribution vs. Multi-Touch Algorithmic Weighting):**
+  - *Multi-Touch Algorithmic Weighting (e.g., Linear, Time-Decay, W-Shaped):* Fractional credit (e.g., 0.4 to portal, 0.2 to social, 0.4 to website) can be theoretically attractive, but creates confusing, fractional lead numbers in sales reporting and requires sophisticated tracking pixels that are rarely comprehensive across offline hoarding calls and third-party real estate portals.
+  - *First-Touch Attribution (Our Choice):* Clear, deterministic, and aligns with sales compensation and top-of-funnel marketing channel evaluation: which marketing dollar actually brought this prospective buyer into the pipeline? To ensure visibility into mid-funnel touches without polluting lead deduplication, we supplement first-touch master attribution with the `multiTouchBreakdown` derived from `LeadSourceEvent`.
+- **Failure Mode Defense (What breaks if we remove our guardrails?):**
+  - *Removing Server-Side Spend Scoping:* If spend figures were sent to the browser and hidden using UI conditional rendering (`userRole === 'SALES_HEAD'`), any sales representative could inspect the JSON response in Chrome DevTools Network tab and view total corporate marketing expenditure, monthly portal allocations, and negotiated vendor rates.
+  - *Removing Division-by-Zero Guards:* If a new marketing channel is introduced (or in off-season months where a channel has 0 leads or 0 attended visits), an un-guarded calculation (`spend / totalLeads` or `spend / attendedVisits`) would result in `Infinity` or `NaN`, which breaks JSON serialization or causes Recharts SVG charts to crash with invalid coordinate errors.
+- **Likely Interview Question 1:** *Why does your attribution dashboard display CPL and CPV instead of Return on Ad Spend (ROAS) or Total Sales Revenue?*
+  - **Technical Answer:** *Because of architectural separation of concerns and data integrity. In real estate development, property sales contracts, escrow payments, stamp duty registrations, and home loan disbursements are managed in enterprise ERP and financial accounting systems (such as SAP or Salesforce Real Estate Cloud), not in the front-of-house AI concierge CRM. Fabricating synthetic deal closing prices inside the CRM would violate domain reality and mislead stakeholders. Instead, ENQUIVO focuses on what the CRM authoritatively tracks: top-of-funnel acquisition cost (CPL), visit scheduling velocity, and cost per verified physical site visit (CPV).*
+- **Likely Interview Question 2:** *How do you prevent duplicate phone inquiries from distorting channel acquisition performance?*
+  - **Technical Answer:** *We enforce first-touch immutability at the ingestion service layer. In `LeadService.ingestLead`, when an incoming inquiry matches an existing phone number, the original `Lead.source` field is never overwritten. Instead, the subsequent touchpoint is appended to `LeadSourceEvent`. In `SourceAnalyticsService`, distinct leads are aggregated by `Lead.source`, guaranteeing each buyer prospect is counted exactly once in the master ledger, while `LeadSourceEvent` powers a secondary engagement velocity breakdown that shows multi-channel touchpoint activity without inflating lead totals.*
+
+---
+
 ## Unverified Historical Information Register
 
 In accordance with strict verification rules, the following details cannot be independently verified from the repository git log and are explicitly recorded as unverified assumptions:

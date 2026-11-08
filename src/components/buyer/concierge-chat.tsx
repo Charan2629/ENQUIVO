@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   Lock,
 } from "lucide-react";
+import { filterBuyerFacingMessages } from "@/lib/chat-message";
 
 interface Message {
   id: string;
@@ -619,7 +620,7 @@ export function ConciergeChat({ initialProjectId, className = "", compact = fals
 
       {/* Message History Container */}
       <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-4.5 text-xs sm:text-[13px]">
-        {messages.map((m) => (
+        {filterBuyerFacingMessages(messages).map((m) => (
           <div
             key={m.id}
             className={`flex items-start gap-2.5 sm:gap-3 ${m.role === "USER" ? "justify-end" : "justify-start"}`}

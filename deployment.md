@@ -113,9 +113,9 @@ npx prisma generate
 # Apply pending database migrations to PostgreSQL
 npx prisma migrate deploy
 
-# Seed the database with date-aware fixture data
-npx prisma db seed
-# or: npm run db:seed
+# Seed the database with date-aware fixture data (requires explicit authorization)
+ALLOW_DESTRUCTIVE_SEED=true npx prisma db seed
+# or: ALLOW_DESTRUCTIVE_SEED=true npm run db:seed
 
 # Reset DB and re-seed (cleans and re-applies migrations)
 npx prisma migrate reset
@@ -123,6 +123,17 @@ npx prisma migrate reset
 # Open Prisma Studio (visual DB browser)
 npx prisma studio
 ```
+
+> [!CAUTION]
+> **Destructive Database Reset Notice & Seed Safety Protocol:**
+> 1. **Destructive Reset Nature:** `npx prisma db seed` is a **destructive development/demo database reset tool**, NOT an incremental or append-only seeder. It executes table-wide deletion across all 14 schema tables in reverse relational dependency order before inserting the baseline seed dataset.
+> 2. **Evaluator Data Deletion:** Executing the seed script permanently deletes any dynamic records created during evaluation sessions (including manually ingested leads, confirmed site visit bookings, new buyer chat conversations, handoff assignments, and staff login sessions).
+> 3. **Deterministic ≠ Non-Destructive:** Repeatable, deterministic seeding means the resulting baseline data is identical across runs—it does **NOT** mean non-destructive.
+> 4. **Post-Evaluation Constraint:** Do **NOT** run the seed script after interactive evaluation workflows begin unless you deliberately intend to wipe the demo database back to its Day-0 baseline.
+> 5. **Strict Endpoint Allowlist (`src/lib/seed-guard.ts`):** The seed script enforces a strict endpoint allowlist. It runs only when `NODE_ENV !== "production"`, `ALLOW_DESTRUCTIVE_SEED === "true"`, and the connection hostname exactly matches an approved development endpoint:
+>    - Direct: `ep-frosty-tooth-b3446kf8.c-4.ap-southeast-1.aws.neon.tech`
+>    - Pooled: `ep-frosty-tooth-b3446kf8-pooler.c-4.ap-southeast-1.aws.neon.tech`
+>    All other endpoints—including production URLs, localhost, and the isolated integration test branch (`ep-mute-butterfly-b3a54tpa`)—are rejected by default and fail closed.
 
 ### Seeded Synthetic Evaluator Accounts & Credentials (Demo Environment Only)
 
@@ -223,7 +234,7 @@ npm run test:coverage
 # npm run test:e2e:ui
 ```
 
-> **Current state:** `npm test` — ✅ CONFIGURED & PASSING (108/108 unit tests across 7 files). `npm run test:integration` — ✅ CONFIGURED & PASSING (62/62 integration tests across 8 files against isolated Neon test branch). `npm run test:e2e` — NOT CONFIGURED (configured in Milestone 7).
+> **Current state:** `npm test` — ✅ CONFIGURED & PASSING (144/144 unit tests across 9 files). `npm run test:integration` — ✅ CONFIGURED & PASSING (75/75 integration tests across 9 files against isolated Neon test branch). `npm run test:e2e` — NOT CONFIGURED (configured in Milestone 7).
 
 ---
 

@@ -35,7 +35,12 @@ import {
   VisitSlotStatus,
   ReminderType,
   ReminderStatus,
+  HandoffStatus,
+  EscalationReason,
+  ConversationLanguage,
+  ChatMessageRole,
 } from "../src/types";
+import { assertSeedSafety } from "../src/lib/seed-guard";
 
 let prisma: PrismaClient | null = null;
 
@@ -43,25 +48,9 @@ async function runSeed() {
   console.log("🌱 ENQUIVO Date-Aware Database Seed Protocol");
   console.log("📅 Reference Date: 2026-11-03T12:00:00.000Z (Nov 3, 2026)");
 
-  // 1. Safety Guard Check: Environment and Explicit Authorization
+  // 1. Safety Guard Check: Environment, Explicit Authorization, and Endpoint Allowlist
   // These checks execute strictly before any database connection or query can occur.
-  if (process.env.NODE_ENV === "production") {
-    console.error(
-      "🛑 FATAL SAFETY ERROR: Destructive database seeding is strictly prohibited in production environment (NODE_ENV=production)."
-    );
-    process.exit(1);
-  }
-
-  if (process.env.ALLOW_DESTRUCTIVE_SEED !== "true") {
-    console.error(
-      "🛑 FATAL SAFETY ERROR: Database seed requires explicit authorization.\n" +
-      "Set ALLOW_DESTRUCTIVE_SEED=true in your environment to authorize wiping and reseeding the database.\n" +
-      "Example: ALLOW_DESTRUCTIVE_SEED=true npx prisma db seed"
-    );
-    process.exit(1);
-  }
-
-  console.log("🔒 Safety guards passed: Development environment confirmed and ALLOW_DESTRUCTIVE_SEED=true provided.");
+  assertSeedSafety();
 
   // 2. Initialize Prisma Client only AFTER safety guards have passed
   const prismaModule = await import("../src/lib/prisma");
@@ -327,7 +316,132 @@ async function runSeed() {
         ],
       });
 
-      // Step H: Seed VisitSlots & SiteVisits
+      // Step H: Seed Conversations & Escalated Handoffs (Milestone 6.3)
+      console.log("💬 [Transaction] Seeding Buyer Conversations & AI Handoffs...");
+
+      // 1. Nidhi Shah (LD-58211): Unassigned PENDING handoff for Price Negotiation
+      const nidhiConv = await tx.conversation.create({
+        data: {
+          id: "conv_seed_nidhi",
+          leadId: nidhiLead.id,
+          language: ConversationLanguage.EN,
+          startedAt: new Date("2026-11-02T08:33:00.000Z"),
+          endedAt: new Date("2026-11-02T08:38:00.000Z"),
+        },
+      });
+
+      await tx.chatMessage.createMany({
+        data: [
+          {
+            id: "msg_seed_nidhi_1",
+            conversationId: nidhiConv.id,
+            role: ChatMessageRole.USER,
+            content:
+              "Hi, I saw your ad on Instagram for Vaastu Enclave 2 BHK. What is the best price you can offer if I make a quick down payment?",
+            createdAt: new Date("2026-11-02T08:33:10.000Z"),
+          },
+          {
+            id: "msg_seed_nidhi_2",
+            conversationId: nidhiConv.id,
+            role: ChatMessageRole.AI,
+            content:
+              "Vaastu Enclave 2 BHK apartments in Ahmedabad range from ₹65 lakh to ₹85 lakh. While I cannot negotiate pricing directly, I can connect you with our senior sales manager to discuss exclusive booking incentives and customized payment schedules.",
+            createdAt: new Date("2026-11-02T08:33:25.000Z"),
+          },
+          {
+            id: "msg_seed_nidhi_3",
+            conversationId: nidhiConv.id,
+            role: ChatMessageRole.USER,
+            content:
+              "Yes please, could you arrange a call with someone who can offer me a 5% discount?",
+            createdAt: new Date("2026-11-02T08:34:00.000Z"),
+          },
+          {
+            id: "msg_seed_nidhi_4",
+            conversationId: nidhiConv.id,
+            role: ChatMessageRole.AI,
+            content:
+              "I have escalated your request to our sales team. A sales representative will review your request and get in touch with you shortly.",
+            createdAt: new Date("2026-11-02T08:34:10.000Z"),
+          },
+        ],
+      });
+
+      await tx.handoff.create({
+        data: {
+          id: "handoff_seed_nidhi",
+          conversationId: nidhiConv.id,
+          escalationReason: EscalationReason.PRICE_NEGOTIATION,
+          summary:
+            "Buyer inquiring about 2 BHK unit at Vaastu Enclave requesting a 5% price discount and down payment incentive. Escalated for human executive price discussion.",
+          status: HandoffStatus.PENDING,
+          assignedToId: null,
+          createdAt: new Date("2026-11-02T08:34:15.000Z"),
+        },
+      });
+
+      // 2. Hardik Patel (LD-58210): ASSIGNED handoff for Unlisted Amenity (Assigned to Vikram Mehta)
+      const hardikConv = await tx.conversation.create({
+        data: {
+          id: "conv_seed_hardik",
+          leadId: hardikLead.id,
+          language: ConversationLanguage.EN,
+          startedAt: new Date("2026-10-31T04:02:00.000Z"),
+          endedAt: new Date("2026-10-31T04:12:00.000Z"),
+        },
+      });
+
+      await tx.chatMessage.createMany({
+        data: [
+          {
+            id: "msg_seed_hardik_1",
+            conversationId: hardikConv.id,
+            role: ChatMessageRole.USER,
+            content:
+              "Hello, I am interested in Prakriti Heights 3 BHK. Does the project feature EV charging bays in the basement parking?",
+            createdAt: new Date("2026-10-31T04:02:15.000Z"),
+          },
+          {
+            id: "msg_seed_hardik_2",
+            conversationId: hardikConv.id,
+            role: ChatMessageRole.AI,
+            content:
+              "Prakriti Heights offers premium residential units across 420 apartments in Ahmedabad. Regarding private EV charging stations, this amenity is currently not listed in our verified portfolio facts. Let me connect you with Vikram Mehta from our sales team who can confirm the electrical provisioning.",
+            createdAt: new Date("2026-10-31T04:02:30.000Z"),
+          },
+          {
+            id: "msg_seed_hardik_3",
+            conversationId: hardikConv.id,
+            role: ChatMessageRole.USER,
+            content:
+              "Understood, please have Vikram reach out with the details.",
+            createdAt: new Date("2026-10-31T04:03:00.000Z"),
+          },
+          {
+            id: "msg_seed_hardik_4",
+            conversationId: hardikConv.id,
+            role: ChatMessageRole.AI,
+            content:
+              "[ASSIGNMENT AUDIT] Handoff assigned to Vikram Mehta (Sales Executive) by Rajesh Verma (Sales Head).",
+            createdAt: new Date("2026-10-31T04:05:00.000Z"),
+          },
+        ],
+      });
+
+      await tx.handoff.create({
+        data: {
+          id: "handoff_seed_hardik",
+          conversationId: hardikConv.id,
+          escalationReason: EscalationReason.UNLISTED_AMENITY,
+          summary:
+            "Buyer inquiring whether Prakriti Heights 3 BHK includes dedicated EV charging infrastructure. Escalated for amenity confirmation.",
+          status: HandoffStatus.ASSIGNED,
+          assignedToId: salesExec1.id,
+          createdAt: new Date("2026-10-31T04:03:10.000Z"),
+        },
+      });
+
+      // Step I: Seed VisitSlots
       console.log("🗓️ [Transaction] Seeding Historical & Future VisitSlots...");
       const hardikSlot = await tx.visitSlot.create({
         data: {
@@ -375,7 +489,7 @@ async function runSeed() {
         });
       }
 
-      // Step I: Seed SiteVisits
+      // Step J: Seed SiteVisits
       console.log("📍 [Transaction] Seeding Historical SiteVisits...");
       const hardikVisit = await tx.siteVisit.create({
         data: {
@@ -398,7 +512,7 @@ async function runSeed() {
         },
       });
 
-      // Step J: Seed Simulated Historical ReminderJobs
+      // Step K: Seed Simulated Historical ReminderJobs
       console.log("⏰ [Transaction] Seeding Simulated Historical ReminderJobs...");
       const simNote = "[ASSUMPTION — Simulated Historical Demonstration Record]";
 
@@ -447,7 +561,7 @@ async function runSeed() {
         ],
       });
 
-      // Step K: Seed Illustrative SourceSpend
+      // Step L: Seed Illustrative SourceSpend
       console.log("💰 [Transaction] Seeding SourceSpend (₹30 Lakh total for Nov 2026)...");
       const spendNote = "[ASSUMPTION — Illustrative Demo Allocation]";
 

@@ -12,6 +12,7 @@ import {
   BuyerSessionOptedOutError,
 } from "@/services/session/buyer-session.service";
 import { LeadService } from "@/services/lead/lead.service";
+import { filterBuyerFacingMessages } from "@/lib/chat-message";
 
 const initSessionSchema = z.object({
   name: z
@@ -89,7 +90,7 @@ export async function GET(req: Request) {
             assignedToName: handoff.assignedTo?.name ?? "Senior Sales Executive",
           }
         : null,
-      messages,
+      messages: filterBuyerFacingMessages(messages),
     });
   } catch (error) {
     if (
@@ -226,7 +227,7 @@ export async function POST(req: Request) {
       lead: {
         name: lead.name,
       },
-      messages: existingMessages,
+      messages: filterBuyerFacingMessages(existingMessages),
     });
 
     // Enforce HTTP-only cookie; raw token is NEVER exposed in the JSON body

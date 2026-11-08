@@ -14,6 +14,7 @@ This document contains concise, evidence-based Architecture Decision Records (AD
 6. [ADR-006: Staff Authentication, Argon2id Passwords, RBAC & Live Role Revalidation](#adr-006-staff-authentication-argon2id-passwords-rbac--live-role-revalidation)
 7. [ADR-007: PostgreSQL-Backed Persistent Staff Session Revocation (Superseding In-Memory Map)](#adr-007-postgresql-backed-persistent-staff-session-revocation-superseding-in-memory-map)
 8. [ADR-008: Dynamic Relational Derivation of Lead Lifecycle Status & Role-Based Record-Level Access Control](#adr-008-dynamic-relational-derivation-of-lead-lifecycle-status--role-based-record-level-access-control)
+9. [ADR-009: Handoff Queue, Role-Scoped Ownership, and In-Conversation System Audit Trails](#adr-009-handoff-queue-role-scoped-ownership-and-in-conversation-system-audit-trails)
 
 ---
 
@@ -318,3 +319,76 @@ However, our Prisma `Lead` model purposefully contains immutable acquisition cha
 - **UI Components & Pages:** `src/app/(portal)/dashboard/leads/page.tsx`, `src/app/(portal)/dashboard/leads/[id]/page.tsx`, `src/components/portal/leads/lead-pipeline-client.tsx`, `src/components/portal/leads/ingest-lead-modal.tsx`.
 - **Unit Tests:** `tests/unit/lead-pipeline.test.ts` (19 tests: validates lifecycle status progression, staff scoping filters, query schema validation, and error cases).
 - **Integration Tests:** `tests/integration/lead-pipeline.test.ts` (7 tests against isolated Neon test branch: verifies SALES_HEAD pagination, SALES_EXEC scoping, keyword search, lifecycle filtering, source filtering, IDOR prevention on getLeadDetail, and live getLeadMetrics).
+
+---
+
+## ADR-009: Handoff Queue, Role-Scoped Ownership, and In-Conversation System Audit Trails
+
+- **Status:** Accepted
+- **Date:** 2026-11-08
+- **Deciders:** Principal Engineering Mentor & Implementation Partner
+
+### Context
+Milestone 6.3 establishes the operations queue for managing AI-escalated and buyer-requested handoffs (`/dashboard/handoffs`). The platform must empower Sales Heads to monitor unassigned queues across the entire developer portfolio, inspect AI-generated summaries and complete multi-turn chat transcripts, balance executive workloads, and atomically assign/reassign handoffs to sales executives. Concurrently, Sales Executives must only access their individually assigned handoffs and be strictly barred from viewing or assigning other executives' records. Furthermore, an immutable audit trail of ownership transfers must be preserved without mutating or migrating the locked 14-model schema.
+
+### Alternatives Considered
+1. **Schema Migration (Adding a Dedicated `HandoffAssignmentHistory` Model):** Adding a new relational table to record every assignment change with actor and timestamp foreign keys. *Rejected:* Violates the project's strict schema lock rule. The existing 14-model architecture intentionally provides full conversation logging (`ChatMessage`) and handoff state (`Handoff.assignedToId`), making an additional table redundant for a take-home assessment.
+2. **Client-Side Queue Scoping:** Sending all organization handoffs to the client browser and filtering out unassigned or rival items in React. *Rejected:* Critical Insecure Direct Object Reference (IDOR) flaw that exposes buyer inquiries, unverified pricing discussions, and contact information.
+3. **In-Conversation System Audit Trails & Relational Interlock:** Executing assignment transactions with atomic ownership updates and recording immutable internal audit turns directly into `ChatMessage` with server-side role scoping. *Accepted.*
+
+### Decision
+1. **Server-Side Role-Based Queue Scoping (`getStaffHandoffScope`):**
+   - `SALES_HEAD`: Unrestricted visibility across all handoff records in the database (`{}`).
+   - `SALES_EXEC`: Strict relational scoping restricted exclusively to handoffs assigned to that specific executive (`{ assignedToId: staffUser.id }`).
+   - `BUYER` / Other: Immediately throws `HandoffForbiddenError` (HTTP 403).
+2. **Anti-IDOR Single Handoff Detail Lookup:**
+   - In `HandoffService.getHandoffDetail(handoffId, staffUser)`, apply the role scope directly in the database lookup (`where: { id: handoffId, ...roleScope }`). If an executive queries an unassigned or rival handoff, the method returns `null` and the API responds with HTTP 404, preventing enumeration attacks.
+3. **Atomic Assignment & Audit Trail (`assignHandoff`):**
+   - Executes inside `prisma.$transaction`.
+   - Enforces that only `SALES_HEAD` can assign or reassign (`requireSalesHead` at API route level and role verification in service).
+   - Validates that the target executive exists and currently holds the `SALES_EXEC` role. Eligibility is strictly governed by whether the user currently holds the `SALES_EXEC` role in PostgreSQL (the User model does not have an independent account activation field; suspension is enforced via role demotion to `BUYER` or user deletion).
+   - Atomically updates `Handoff.status` to `ASSIGNED` and `Handoff.assignedToId` to the target executive.
+   - Appends an audit message turn into `ChatMessage` (`role: ChatMessageRole.AI`, content: `[Ownership Assigned] ...` or `[Ownership Reassigned] ...`) recording the exact timestamp, target executive, and acting Sales Head.
+   - **Concurrency Semantics:** Executes under serialized Last-Write-Wins (LWW). When two concurrent Sales Head assignment requests target the same handoff simultaneously, PostgreSQL serializes the updates on the row-level write lock. Both transactions commit atomically with their matching audit notes without deadlock, P2002 collision, or orphaned records. The final database ownership unambiguously matches whichever transaction committed last.
+   - **Relational Interlock:** Because `LeadService.getStaffLeadScope()` derives lead ownership through `conversations.some.handoff.assignedToId`, assigning a handoff immediately grants the executive access to that lead in `/dashboard/leads` without requiring duplicate database columns or synchronization hooks.
+4. **Internal Audit Message Isolation & Boundary Defense (`src/lib/chat-message.ts`):**
+   - Centralized helpers `isInternalAuditMessage()` and `filterBuyerFacingMessages()` strictly isolate internal audit entries:
+     - An audit message must satisfy BOTH: its role is `AI` (ChatMessageRole.AI) and its content starts with a recognized prefix (`[Ownership Assigned]`, `[Ownership Reassigned]`, etc.). Ordinary buyer messages with role `USER` starting with similar text are never suppressed (anti-spoofing).
+     - **Staff Visibility:** Visible only to authorized staff in `TranscriptModal` and `/dashboard/leads/[id]` with dedicated audit formatting.
+     - **Buyer API & UI Isolation:** Stripped from `GET /api/chat/session`, `POST /api/chat/session`, and the buyer concierge interface (`concierge-chat.tsx`).
+     - **AI Prompt Context Isolation:** Excluded from the `history` array passed to Gemini (`AIConciergeService.sendMessage`), ensuring Gemini is never prompted with staff names, emails, or internal reassignments and cannot leak them to buyers.
+5. **Workload Distribution Metrics:**
+   - In `getEligibleSalesExecutives()`, aggregate active lead counts across all staff users who currently hold the `SALES_EXEC` role, presenting live workload badges in the assignment modal to assist the Sales Head with fair distribution.
+6. **Resolution Control (`updateHandoffStatus`):**
+   - Allows `SALES_HEAD` or the assigned `SALES_EXEC` to transition an escalation to `RESOLVED` (setting `resolvedAt`), while preventing unauthorized executives from resolving rival cases.
+
+### Trade-offs & Consequences
+- **Positive:**
+  - Zero schema migrations required; 100% compliant with the 14-model architecture.
+  - Complete ACID transaction guarantees under serialized LWW without race conditions or orphaned audit notes.
+  - Full boundary isolation preventing internal audit leakages to buyers or Gemini context windows.
+  - Relational access control automatically propagates lead visibility across both `/dashboard/handoffs` and `/dashboard/leads`.
+  - Comprehensive anti-IDOR defense on both listing queries and individual transcript lookups.
+- **Negative:**
+  - Audit turns share the `ChatMessage` table, requiring centralized prefix filtering (`[Ownership Assigned]`, `[Ownership Reassigned]`) to maintain complete separation between buyer dialogue turns and staff audit logs.
+
+### Code & Test Evidence
+- **Domain Service:** `src/services/handoff/handoff.service.ts` (`getStaffHandoffScope`, `getHandoffs`, `getHandoffDetail`, `getHandoffMetrics`, `getEligibleSalesExecutives`, `assignHandoff`, `updateHandoffStatus`).
+- **Isolation Helpers:** `src/lib/chat-message.ts` (`isInternalAuditMessage`, `filterBuyerFacingMessages`).
+- **Validation Schemas:** `src/lib/validations/handoff.ts` (`handoffQuerySchema`, `assignHandoffSchema`, `updateHandoffStatusSchema`).
+- **API Endpoints:**
+  - `GET /api/handoffs` (list with filters, search, pagination, role scoping).
+  - `GET /api/handoffs/metrics` (portfolio/queue aggregate metrics).
+  - `GET /api/handoffs/[id]` (anti-IDOR transcript & lead details).
+  - `PATCH /api/handoffs/[id]/assign` (Sales Head assignment with CSRF protection).
+  - `PATCH /api/handoffs/[id]/status` (resolution update with CSRF protection).
+  - `GET /api/chat/session` & `POST /api/chat/session` (hardened with `filterBuyerFacingMessages`).
+- **UI Components & Pages:**
+  - `src/app/(portal)/dashboard/handoffs/page.tsx` (Server component with session & metrics).
+  - `src/components/portal/handoffs/handoff-queue-client.tsx` (Client queue table & mobile cards with debounced search, filters, pagination).
+  - `src/components/portal/handoffs/assign-handoff-modal.tsx` (Sales Head assignment modal with live executive workload badges).
+  - `src/components/portal/handoffs/transcript-modal.tsx` (Multi-turn chat transcript viewer with grounding facts and audit formatting).
+  - `src/components/buyer/concierge-chat.tsx` (Hardened with `filterBuyerFacingMessages`).
+  - `src/app/(portal)/dashboard/leads/[id]/page.tsx` (Staff lead dossier with system audit formatting).
+- **Unit Tests:** `tests/unit/handoff.test.ts` (23 tests passed: validates role scoping filters, query/assign/status Zod schemas, error classes, and audit message isolation helpers).
+- **Integration Tests:** `tests/integration/handoff-queue.test.ts` (13 tests passed against isolated Neon PostgreSQL test branch: validates SALES_HEAD vs SALES_EXEC scoping, search, filters, anti-IDOR detail lookup, atomic assignment, reassignment, 403 authorization rejection, invalid assignee rejection, serialized LWW concurrent assignment execution, workload metrics, status resolution, and buyer/API/AI audit isolation regression).

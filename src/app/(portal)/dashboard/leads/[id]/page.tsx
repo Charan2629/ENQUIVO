@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { requireStaffSession } from "@/lib/auth-guard";
 import { leadService } from "@/services/lead/lead.service";
 import { LeadSource, BookingStatus, AttendanceOutcome } from "@prisma/client";
+import { isInternalAuditMessage } from "@/lib/chat-message";
 import { LeadLifecycleStatus } from "@/types";
 import {
   ArrowLeft,
@@ -571,6 +572,18 @@ export default async function LeadDetailPage({ params }: LeadDetailPageProps) {
                 {/* Messages Transcript */}
                 <div className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
                   {conv.messages.map((msg) => {
+                    const isAudit = isInternalAuditMessage(msg);
+                    if (isAudit) {
+                      return (
+                        <div
+                          key={msg.id}
+                          className="p-2.5 rounded-lg bg-slate-950/80 border border-slate-800/80 text-[11px] text-slate-400 italic text-center"
+                        >
+                          {msg.content}
+                        </div>
+                      );
+                    }
+
                     const isUser = msg.role === "USER";
                     return (
                       <div

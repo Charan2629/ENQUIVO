@@ -1,33 +1,55 @@
-﻿import React from "react";
+import React from "react";
+import { UserRole } from "@prisma/client";
 import { requireStaffSession } from "@/lib/auth-guard";
-import { Headphones } from "lucide-react";
+import { handoffService } from "@/services/handoff/handoff.service";
+import { HandoffQueueClient } from "@/components/portal/handoffs/handoff-queue-client";
+import { Headphones, Compass } from "lucide-react";
 
 export const instant = false;
 
 export default async function HandoffsPage() {
-  await requireStaffSession();
+  const session = await requireStaffSession();
+  const { user } = session;
+
+  const metrics = await handoffService.getHandoffMetrics(user);
+  const isSalesHead = user.role === UserRole.SALES_HEAD;
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center">
-          <Headphones className="w-5 h-5" />
+      {/* Header Banner */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
+            <Headphones className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-xl font-bold text-white tracking-tight">
+                AI Handoff & Escalations Queue
+              </h1>
+              <span className="text-[10px] font-semibold uppercase px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                {isSalesHead ? "Full Portfolio Scope" : "Assigned Escalations Only"}
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Review and manage buyer inquiries escalated by AI Concierge with full chat transcripts and assignment controls
+            </p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-xl font-bold text-white">AI Handoff & Escalations Queue</h1>
-          <p className="text-xs text-slate-400">Review buyer conversations escalated by AI Concierge</p>
+
+        {/* Timeline Note */}
+        <div className="text-xs text-slate-500 bg-slate-900/60 border border-slate-800 rounded-xl px-3 py-2 flex items-center gap-2">
+          <Compass className="w-3.5 h-3.5 text-slate-400" />
+          <span>Timeline: Active Assessment Period (Nov 2026)</span>
         </div>
       </div>
 
-      <div className="p-8 rounded-2xl bg-slate-900 border border-slate-800 text-center">
-        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20 mb-3">
-          Milestone 6 • Phase 3
-        </div>
-        <h2 className="text-lg font-semibold text-white">Handoff Queue & Salesperson Assignment Coming in Phase 3</h2>
-        <p className="text-sm text-slate-400 max-w-md mx-auto mt-2">
-          Real-time queue of buyer escalations with summary, escalation reason, full chat transcript inspection, and assignment to sales executives.
-        </p>
-      </div>
+      {/* Interactive Queue Client */}
+      <HandoffQueueClient
+        userRole={user.role}
+        userName={user.name}
+        initialMetrics={metrics}
+      />
     </div>
   );
 }

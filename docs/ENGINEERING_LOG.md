@@ -968,6 +968,104 @@ Following the establishment of staff authentication and portal foundations in Ph
 
 ---
 
+### Milestone 6 Phase 3: Salesperson Assignment & Handoff Management Queue
+
+- **Date:** 2026-11-08 (Committed & Verified)
+- **Milestone & Task:** Milestone 6 Phase 3 — Operational Handoff Queue (`/dashboard/handoffs`), Sales Head Portfolio Queue vs Sales Executive Scoped Queue, Assignment & Workload Modal, Chat Transcript Viewer, Status Resolution, Anti-IDOR Defense, and Zero-Schema-Mutation In-Conversation Audit Trails.
+- **Git Commit Hash:** Pending commit
+
+#### 1. Context & Objectives
+Milestone 6.3 establishes the operations queue for managing AI-escalated and buyer-requested handoffs (`/dashboard/handoffs`). In residential property sales, when an AI Concierge encounters questions beyond verified facts (e.g. price discounts, unlisted amenities, or missing project details) or when a buyer explicitly requests a human, the system must immediately escalate the inquiry to staff. Phase 3 delivered:
+1. An operational, real-time database-backed queue interface on `/dashboard/handoffs`.
+2. Role-based scoping enabling Sales Heads to inspect the full developer portfolio queue, filter by assignment status (`ALL`, `UNASSIGNED`, `ASSIGNED`, `RESOLVED`) and escalation reasons, search by buyer name/phone/leadCode, and review executive workloads.
+3. Interactive salesperson assignment and reassignment modal displaying staff users who currently hold the SALES_EXEC role with live active-lead workload distribution badges.
+4. Turn-by-turn chat transcript modal (`TranscriptModal`) rendering complete multi-turn conversation logs, grounding fact badges, escalation metadata, and system audit entries.
+5. Sales Executive queue view restricted strictly to their assigned escalations, with capabilities to inspect buyer transcripts and mark escalations as resolved (`HandoffStatus.RESOLVED`).
+6. Comprehensive server-side authorization and anti-IDOR security preventing executives from viewing, resolving, or reassigning rival or unassigned cases.
+7. Atomic ACID assignment transactions and an immutable in-conversation audit trail without mutating the locked 14-model schema.
+8. Relational access control interlock: assigning a handoff to an executive immediately grants them access to that lead in `/dashboard/leads` without requiring secondary database updates.
+
+#### 2. Architecture & Design Decisions
+- **Handoff Queue & Role-Scoped Ownership (ADR-009, Decision D-029):** Implemented in `HandoffService.getStaffHandoffScope(staffUser)`:
+  - `SALES_HEAD`: Unrestricted visibility across all handoff records in the database (`{}`).
+  - `SALES_EXEC`: Strict relational scoping restricted exclusively to handoffs assigned to that specific executive (`{ assignedToId: staffUser.id }`).
+  - `BUYER` / Other: Immediately throws `HandoffForbiddenError` (HTTP 403).
+- **Anti-IDOR Detail & Transcript Lookup:** In `HandoffService.getHandoffDetail(handoffId, staffUser)`, apply the role scope directly in the database lookup (`where: { id: handoffId, ...roleScope }`). If an executive queries an unassigned or rival handoff, the method returns `null` and the API responds with HTTP 404, preventing attackers from probing the existence of valid IDs.
+- **Atomic Assignment & In-Conversation Audit Trail:**
+  - `assignHandoff(handoffId, salesExecId, actingStaffUser)` executes inside an atomic `prisma.$transaction`.
+  - Asserts that `actingStaffUser.role === UserRole.SALES_HEAD`.
+  - Asserts that target assignee exists and currently holds the SALES_EXEC role (the User model does not have an independent account activation field).
+  - Updates `Handoff.status` to `ASSIGNED` and sets `Handoff.assignedToId` to the target executive.
+  - Appends an audit message turn into `ChatMessage` (`role: ChatMessageRole.AI`, content: `[Ownership Assigned] Lead assigned to ...` or `[Ownership Reassigned] Lead reassigned to ...`) recording the exact timestamp, target executive, and acting Sales Head.
+  - Resolves the trade-off between auditability and schema lock: rather than introducing a new table (`HandoffAssignmentHistory`), in-conversation audit entries preserve complete historical accountability using the existing schema.
+- **Relational Access Control Interlock:** In Milestone 6.2, `LeadService.getStaffLeadScope()` was designed such that a `SALES_EXEC` sees leads where `conversations: { some: { handoff: { assignedToId: staffUser.id } } }`. When `HandoffService.assignHandoff` sets `assignedToId = salesExecId`, that buyer lead instantaneously appears in the executive's `/dashboard/leads` pipeline and `/dashboard/handoffs` queue without requiring any secondary database updates or synchronization hooks.
+- **Executive Workload Balancing:** `getEligibleSalesExecutives()` queries staff users who currently hold the SALES_EXEC role and aggregates their active assigned lead counts, displaying live workload badges in the assignment modal to ensure equitable lead distribution.
+- **Integration Test Isolation (`fileParallelism: false`):** Configured Vitest integration test config to run test files serially. Concurrently running test suites against a single database branch caused cross-suite race conditions on global metric counts. Running integration tests sequentially completely eliminated test interference.
+
+#### 3. Files Created or Modified
+- `src/lib/chat-message.ts` — Centralized message filtering utility (`isInternalAuditMessage`, `filterBuyerFacingMessages`) defining audit markers (`[Ownership Assigned]`, `[Ownership Reassigned]`, `[ASSIGNMENT AUDIT]`, `[AUDIT]`) to guarantee zero internal staff data or assignment history leaks to buyer APIs, buyer UI, or Gemini LLM prompts. Enforces that an audit message must satisfy BOTH: role is `AI` and content starts with a recognized prefix, preventing spoofed buyer turns from being suppressed.
+- `src/lib/seed-guard.ts` — Database seed safety guard enforcing strict environment validation (`NODE_ENV !== "production"`), explicit authorization (`ALLOW_DESTRUCTIVE_SEED === "true"`), and an exact endpoint allowlist (`APPROVED_SEED_ENDPOINTS`) matching only the approved Neon development endpoint (`ep-frosty-tooth-b3446kf8`, direct and pooled hostnames). Rejects test databases, localhost, and unknown endpoints by default, and logs only sanitized hostnames without credentials.
+- `src/types/index.ts` — Added domain interfaces: `EligibleSalesExecutive`, `HandoffListItem`, `HandoffPagination`, `HandoffMetrics`, and `HandoffDetail`.
+- `src/lib/validations/handoff.ts` — Authored Zod validation schemas (`handoffQuerySchema`, `assignHandoffSchema`, `updateHandoffStatusSchema`) and filter constants.
+- `src/services/handoff/handoff.service.ts` — Implemented `HandoffService` with Prisma client dependency injection: role-based scoping, paginated queries, detail retrieval with anti-IDOR checks, live aggregate metrics, executive workload aggregation, atomic assignment with audit trails, and status updates. Clarified eligibility semantics: qualified executives are identified solely by whether the user currently holds the SALES_EXEC role.
+- `src/services/ai/ai.service.ts` — Hardened conversational history compilation with `!isInternalAuditMessage(m)` so internal staff assignments, executive names, and system audit markers are strictly excluded from Gemini prompt context.
+- `src/app/api/chat/session/route.ts` — Hardened buyer session retrieval (GET) and conversation initialization (POST) with `filterBuyerFacingMessages()`, ensuring assignment audit turns are never transmitted over the wire to buyer clients.
+- `src/components/buyer/concierge-chat.tsx` — Applied defense-in-depth rendering filter using `filterBuyerFacingMessages()`.
+- `src/app/api/handoffs/route.ts` — Authenticated endpoint for listing and filtering handoffs.
+- `src/app/api/handoffs/metrics/route.ts` — Authenticated endpoint returning role-scoped queue metrics and executive workloads.
+- `src/app/api/handoffs/[id]/route.ts` — Authenticated detail lookup with 404 anti-IDOR behavior.
+- `src/app/api/handoffs/[id]/assign/route.ts` — Protected assignment endpoint with `requireSalesHead` and `verifySameOrigin` CSRF protection.
+- `src/app/api/handoffs/[id]/status/route.ts` — Protected status resolution endpoint with `requireStaffSession` and `verifySameOrigin` CSRF protection.
+- `src/app/(portal)/dashboard/handoffs/page.tsx` — Server component with `requireStaffSession`, live metrics retrieval, and interactive queue client.
+- `src/components/portal/handoffs/handoff-queue-client.tsx` — Client component with debounced search, status pills, reason/assignee filters, responsive desktop table and mobile cards, inline transcript triggers, and assignment controls.
+- `src/components/portal/handoffs/assign-handoff-modal.tsx` — Interactive modal showing buyer context, current assignee, and selectable list of eligible sales executives with live workload badges.
+- `src/components/portal/handoffs/transcript-modal.tsx` — Modal for turn-by-turn chat transcript inspection with `isInternalAuditMessage` system styling, grounding facts display, and quick link to the lead dossier.
+- `src/app/(portal)/dashboard/leads/[id]/page.tsx` — Updated chat transcript section using `isInternalAuditMessage` to render assignment events as centered system audit notes rather than misattributed AI responses.
+- `prisma/seed.ts` — Seeded buyer conversations and escalated handoffs with deterministic stable IDs (`conv_seed_nidhi`, `conv_seed_hardik`, `handoff_seed_nidhi`, `handoff_seed_hardik`): Nidhi Shah (`LD-58211`, unassigned `status: PENDING`, `PRICE_NEGOTIATION`) and Hardik Patel (`LD-58210`, assigned `status: ASSIGNED` to Vikram Mehta, `UNLISTED_AMENITY`). Integrated `assertSeedSafety()` before Prisma initialization.
+- `vitest.integration.config.mts` — Added `fileParallelism: false` to ensure serial integration test execution against isolated Neon test branch.
+- `tests/unit/handoff.test.ts` — 24 unit tests verifying role scoping logic, query schema validation, assignment schema validation, status schema validation, domain error classes, role-aware audit message identification, and anti-spoofing buyer message preservation.
+- `tests/unit/seed-guard.test.ts` — 12 unit tests verifying pure seed guard logic across approved endpoints (direct and pooled), production blocking, missing flag, test branch rejection, unknown host fail-closed behavior, URL parsing, and allowlist integrity.
+- `tests/integration/handoff-queue.test.ts` — 13 integration tests against isolated Neon test branch verifying SALES_HEAD vs SALES_EXEC scoping, search, filters, anti-IDOR detail lookup, atomic assignment, reassignment, 403 authorization rejection, invalid assignee rejection, concurrent assignment race condition defense (serialized Last-Write-Wins), workload metrics, status resolution, and buyer API/UI/AI isolation with user message preservation.
+- `docs/ARCHITECTURE_DECISIONS.md` — Added ADR-009 documenting Handoff Queue, Role-Scoped Ownership, In-Conversation System Audit Trails, Audit Isolation, and Concurrency Semantics.
+- `docs/TDD_DRAFT.md` — Updated Decision Log (D-029, D-030) and Milestone Completion Tracker.
+- `docs/PROJECT_STATE.md` — Updated operational state, test counts, Decision Log, and next actions.
+- `deployment.md` — Updated test counts (144 unit tests, 75 integration tests) and documented destructive reset warnings and seed safety endpoint allowlist.
+
+#### 4. Verification Performed & Results
+- `npm test` — ✅ PASS (144/144 unit tests passed across 9 files, including 24 in `tests/unit/handoff.test.ts` and 12 in `tests/unit/seed-guard.test.ts`).
+- `npm run test:integration` — ✅ PASS (75/75 integration tests passed across 9 files against Neon test branch `ep-mute-butterfly-b3a54tpa`, including 13 in `tests/integration/handoff-queue.test.ts`).
+- `npx tsc --noEmit` — ✅ PASS (0 errors across entire workspace).
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings across all files).
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 25 static & dynamic routes compiled).
+- `git diff --check` — ✅ PASS (0 trailing whitespace or formatting errors).
+
+#### 5. Division of Responsibility & AI Collaboration
+- **Developer Contribution:** Approved M6 Phase 3 scope and architectural approach; mandated schema preservation over introducing redundant assignment history tables; mandated in-conversation system audit notes; required strict server-side authorization scoping isolating executives to assigned handoffs; mandated single-handoff IDOR defense returning 404 for unassigned/rival cases; directed seeding realistic conversations to test executive workflow demonstrations; and mandated an exact endpoint allowlist for destructive seed safety.
+- **AI Assistance:** Implemented `HandoffService`, authored Zod query/assignment/status validation schemas, built API routes with CSRF and RBAC protection, developed interactive client components (`HandoffQueueClient`, `AssignHandoffModal`, `TranscriptModal`), built `/dashboard/handoffs/page.tsx`, updated `prisma/seed.ts`, authored `src/lib/chat-message.ts` for strict audit isolation, authored `src/lib/seed-guard.ts` with pure validation logic, authored 36 unit tests (24 handoff + 12 seed-guard) and 13 integration tests against isolated Neon test branch, fixed serial execution in Vitest integration configuration, and synchronized all project documentation.
+
+#### 6. Interview Preparation & Deep-Dive
+- **Code Walkthrough:**
+  - `src/services/handoff/handoff.service.ts`: Implements `getStaffHandoffScope(staffUser)` returning `{}` for `SALES_HEAD` or `{ assignedToId: staffUser.id }` for `SALES_EXEC`.
+  - `getHandoffs(params, staffUser)`: Combines `roleScope`, `statusFilter`, `reasonFilter`, `assigneeFilter`, and keyword search (OR across `lead.name`, `lead.phone`, `lead.leadCode`) into an atomic PostgreSQL query. Returns paginated DTOs with buyer info, conversation language, message counts, and assignee details.
+  - `getHandoffDetail(handoffId, staffUser)`: Queries `handoff.findFirst` with `where: { id: handoffId, ...roleScope }`, including complete messages and lead project info. Returns `null` if the record does not exist or does not belong to the requesting executive (anti-IDOR 404).
+  - `assignHandoff(handoffId, salesExecId, actingStaffUser)`: Executes inside `prisma.$transaction`. Verifies caller is `SALES_HEAD` and target is an active `SALES_EXEC`. Updates `Handoff.status = ASSIGNED` and `Handoff.assignedToId = salesExecId`. Creates a new `ChatMessage` turn (`role: ChatMessageRole.AI`, content: `[Ownership Assigned] ...` or `[Ownership Reassigned] ...`) preserving actor and timestamp.
+  - `updateHandoffStatus(handoffId, newStatus, staffUser)`: Allows `SALES_HEAD` or assigned `SALES_EXEC` to resolve an escalation (`HandoffStatus.RESOLVED`, recording `resolvedAt`).
+  - `src/app/api/handoffs/[id]/assign/route.ts`: Enforces `verifySameOrigin` CSRF protection, authenticates via `requireStaffSession`, asserts `requireSalesHead`, validates payload with `assignHandoffSchema`, and delegates to `handoffService.assignHandoff`.
+  - `src/components/portal/handoffs/handoff-queue-client.tsx`: Renders summary metric cards, filter controls, and responsive table/cards. Handles debounced search, modal triggers for assignment and transcripts, and inline status resolution.
+- **Trade-off Defense (In-Conversation System Audit Trails vs. New Database Model):**
+  - *New Table (`HandoffAssignmentHistory`):* Requires a schema migration, adding foreign keys and index overhead for what is essentially an operational audit trail in a 420-unit development.
+  - *In-Conversation System Audit Trails (Our Choice):* By recording assignment and reassignment events directly into `ChatMessage` as structured audit turns (`[Ownership Assigned] Lead assigned to ...`), the audit history is co-located with the multi-turn conversational transcript. When a sales executive opens `TranscriptModal`, they see both the buyer's questions, the AI's responses, and the exact timestamp and identity of the Sales Head who assigned the lead to them, preserving 100% auditability without schema mutation.
+- **Failure Mode Defense (What breaks if we remove our guardrails?):**
+  - *Removing Internal Audit Message Isolation:* Because assignment audits are stored in `ChatMessage` using `role: AI` to comply with the locked schema, failing to apply `filterBuyerFacingMessages()` in `/api/chat/session` and `ai.service.ts` would leak internal executive names, email addresses, and staff assignment actions directly to the buyer's mobile UI and inject them into Gemini's LLM context window during subsequent dialogue turns.
+  - *Removing Atomic Transactions on Assignment:* If `assignHandoff` executed the handoff update and the chat audit message as separate independent database calls without `prisma.$transaction`, a database glitch or network timeout between calls could leave the handoff assigned to an executive with zero audit record of who assigned it or when.
+  - *Removing Server-Side Role Scoping on Detail Lookup:* If `getHandoffDetail` looked up by `id` alone without combining `roleScope`, an executive could modify the URL or make an API request with another executive's handoff ID to inspect confidential pricing negotiations and buyer phone numbers belonging to their colleagues (IDOR vulnerability).
+- **Likely Interview Question 1:** *How do you prevent race conditions when two Sales Heads attempt to assign the same escalation to different executives simultaneously?*
+  - **Technical Answer:** *We wrap the entire assignment workflow inside an interactive PostgreSQL transaction (`prisma.$transaction`). Inside the transaction, we first query the existing handoff, validate permissions and target assignee eligibility, update `Handoff` with the new assignee, and append the audit note to `ChatMessage`. In PostgreSQL, interactive transactions acquire row-level locks on updated records. When two concurrent requests run via `Promise.all`, PostgreSQL serializes the updates: one transaction executes first, followed by the second. Both transactions maintain ACID consistency, ensuring the final database record reflects a single valid assignee and both ownership transitions are accurately recorded in the chat audit trail.*
+- **Likely Interview Question 2:** *Why did you configure `fileParallelism: false` in your Vitest integration test suite?*
+  - **Technical Answer:** *Vitest runs test files in parallel worker processes by default. However, integration tests run against a real PostgreSQL database instance (our isolated Neon test branch) and perform operations that assert global aggregate counts—such as verifying that `getHandoffMetrics` or `getLeadMetrics` accurately counts total escalations or unassigned leads. When multiple test suites run concurrently, one suite inserting or deleting records pollutes the global count assertions of another suite running at the exact same millisecond. Setting `fileParallelism: false` forces Vitest to run integration test files serially, guaranteeing that each test suite executes its setup, tests, and teardown in total isolation without cross-test race conditions.*
+
+---
+
 ## Unverified Historical Information Register
 
 In accordance with strict verification rules, the following details cannot be independently verified from the repository git log and are explicitly recorded as unverified assumptions:

@@ -11,6 +11,7 @@ import {
 } from "@prisma/client";
 import { formatInTimeZone } from "date-fns-tz";
 import { prisma as defaultPrisma } from "@/lib/prisma";
+import { isInternalAuditMessage } from "@/lib/chat-message";
 import { BookingService } from "@/services/booking/booking.service";
 import {
   ChatInput,
@@ -527,9 +528,9 @@ export class AIConciergeService {
       take: 20,
     });
 
-    // Format history for Gemini (excluding the just-saved current user message)
+    // Format history for Gemini (excluding the just-saved current user message and any internal audit entries)
     const history = previousMessages
-      .filter((m) => m.id !== userMessage.id)
+      .filter((m) => m.id !== userMessage.id && !isInternalAuditMessage(m))
       .map((m) => ({
         role: (m.role === ChatMessageRole.USER ? "user" : "model") as "user" | "model",
         text: m.content,

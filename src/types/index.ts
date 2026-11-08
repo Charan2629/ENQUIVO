@@ -40,6 +40,12 @@ export type {
 
 export type { LeadLifecycleStatus } from "@/lib/validations/lead";
 import type { LeadLifecycleStatus } from "@/lib/validations/lead";
+import type {
+  EscalationReason,
+  HandoffStatus,
+  ConversationLanguage,
+  ChatMessageRole,
+} from "@prisma/client";
 
 // ---------------------------------------------------------------------------
 // Lead Pipeline Domain Types (Milestone 6.2)
@@ -175,6 +181,102 @@ export interface LeadDetail {
       attempts: number;
     }>;
   }>;
+}
+
+// ---------------------------------------------------------------------------
+// Handoff Queue & Assignment Domain Types (Milestone 6.3)
+// ---------------------------------------------------------------------------
+
+export interface EligibleSalesExecutive {
+  id: string;
+  name: string;
+  email: string;
+  activeLeadCount: number;
+}
+
+export interface HandoffListItem {
+  id: string;
+  conversationId: string;
+  escalationReason: EscalationReason;
+  summary: string;
+  status: HandoffStatus;
+  createdAt: Date;
+  resolvedAt: Date | null;
+  language: ConversationLanguage;
+  assignedTo: {
+    id: string;
+    name: string;
+    email: string;
+  } | null;
+  lead: {
+    id: string;
+    leadCode: string;
+    name: string;
+    phone: string | null;
+    email: string | null;
+    source: LeadSource;
+    projectName: string | null;
+    configuration: string | null;
+  };
+  messageCount: number;
+}
+
+export interface HandoffPagination {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface HandoffMetrics {
+  totalHandoffs: number;
+  unassignedCount: number;
+  assignedCount: number;
+  resolvedCount: number;
+  byReason: Record<EscalationReason, number>;
+  eligibleExecutives: EligibleSalesExecutive[];
+}
+
+export interface HandoffDetail {
+  id: string;
+  conversationId: string;
+  escalationReason: EscalationReason;
+  summary: string;
+  status: HandoffStatus;
+  createdAt: Date;
+  resolvedAt: Date | null;
+  assignedTo: {
+    id: string;
+    name: string;
+    email: string;
+  } | null;
+  conversation: {
+    id: string;
+    language: ConversationLanguage;
+    startedAt: Date;
+    endedAt: Date | null;
+    messages: Array<{
+      id: string;
+      role: ChatMessageRole;
+      content: string;
+      createdAt: Date;
+      groundingFactIds: string[];
+    }>;
+  };
+  lead: {
+    id: string;
+    leadCode: string;
+    name: string;
+    phone: string | null;
+    email: string | null;
+    source: LeadSource;
+    projectId: string | null;
+    projectName: string | null;
+    projectLocation: string | null;
+    configuration: string | null;
+    firstResponseAt: Date | null;
+    createdAt: Date;
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -392,3 +392,100 @@ Milestone 6.3 establishes the operations queue for managing AI-escalated and buy
   - `src/app/(portal)/dashboard/leads/[id]/page.tsx` (Staff lead dossier with system audit formatting).
 - **Unit Tests:** `tests/unit/handoff.test.ts` (23 tests passed: validates role scoping filters, query/assign/status Zod schemas, error classes, and audit message isolation helpers).
 - **Integration Tests:** `tests/integration/handoff-queue.test.ts` (13 tests passed against isolated Neon PostgreSQL test branch: validates SALES_HEAD vs SALES_EXEC scoping, search, filters, anti-IDOR detail lookup, atomic assignment, reassignment, 403 authorization rejection, invalid assignee rejection, serialized LWW concurrent assignment execution, workload metrics, status resolution, and buyer/API/AI audit isolation regression).
+
+---
+
+## ADR-010: Fact Sheet Approval Governance, Content Demotion Invariant, and AI Grounding Isolation
+
+- **Status:** Accepted
+- **Date:** 2026-11-08
+- **Deciders:** Principal Engineering Mentor & Implementation Partner
+
+### Context
+In real estate AI concierge applications, preventing hallucinations requires deterministic database grounding. If property specifications, starting prices, or configurations can be casually modified without human executive sign-off, stale or unauthorized marketing claims can enter the LLM context window, resulting in RERA non-compliance and legal liability.
+
+### Alternatives Considered
+1. **Unconstrained Direct Editing:** Allow staff to edit fact sheet records directly in PostgreSQL without changing their verification status. *Rejected:* Extreme risk of unverified or hallucinated facts leaking into Gemini's grounding context without approval.
+2. **Dual-Table Architecture (DraftFacts vs VerifiedFacts):** Maintain separate tables for staging and production facts. *Rejected:* Violates the strict 14-model schema freeze; creates data duplication and schema migration overhead.
+3. **Automatic Content Demotion Invariant (Chosen):** Utilize the existing 14-model `FactSheet` schema (`status: VERIFIED | DRAFT | UNVERIFIED`, `isActive: Boolean`, `verifiedById: String?`). Any content modification (`key`, `value`, `scope`, or `projectId`) on an existing `VERIFIED` fact automatically demotes its status to `UNVERIFIED` and sets `verifiedById = null`.
+
+### Decision
+1. **Server-Side Role Governance:** All Fact Sheet mutations (`createFactSheet`, `updateFactSheet`, `verifyFactSheet`, `deleteFactSheet`) are restricted strictly to `SALES_HEAD` accounts via `requireSalesHead(req)`. Requests from `SALES_EXEC` or unauthorized roles are rejected with HTTP 403.
+2. **Automatic Content Demotion Invariant:** When `FactSheetService.updateFactSheet()` detects a modification to content fields (`key`, `value`, `scope`, or `projectId`) on a currently `VERIFIED` record, it automatically sets `status = FactSheetStatus.UNVERIFIED` and disconnects `verifiedById`. This guarantees that unreviewed changes can never remain active in production AI grounding.
+3. **AI Grounding Isolation:** `AIConciergeService.getVerifiedFacts()` retrieves records strictly matching `WHERE status = 'VERIFIED' AND isActive = true`. Draft, unverified, demoted, and deactivated entries are completely excluded from Gemini's prompt context.
+4. **Approval & Rejection Lifecycle:**
+   - `VERIFY` action: Sets `status = VERIFIED`, `isActive = true`, and connects `verifiedById = staffUser.id`.
+   - `REJECT` action: Sets `status = UNVERIFIED`, `isActive = false`, and disconnects `verifiedById`.
+
+### Trade-offs & Consequences
+- **Positive:**
+  - Zero schema migrations required.
+  - Fail-safe anti-hallucination protection: accidental or unauthorized edits instantly remove facts from AI retrieval.
+  - Complete auditability: every verified fact records both its creator (`createdById`) and authorized approver (`verifiedById`).
+- **Negative:**
+  - Editing a typo on a live fact temporarily removes it from AI retrieval until the Sales Head clicks "Approve / Verify".
+
+### Code & Test Evidence
+- **Domain Service:** `src/services/fact-sheet/fact-sheet.service.ts` (`getFactSheets`, `getFactSheetMetrics`, `createFactSheet`, `updateFactSheet`, `verifyFactSheet`, `deleteFactSheet`).
+- **Validation Schemas:** `src/lib/validations/fact-sheet.ts` (`factSheetQuerySchema`, `createFactSheetSchema`, `updateFactSheetSchema`, `verifyFactSheetSchema`).
+- **API Endpoints:**
+  - `GET /api/fact-sheet`, `POST /api/fact-sheet`
+  - `GET /api/fact-sheet/metrics`
+  - `PATCH /api/fact-sheet/[id]`, `DELETE /api/fact-sheet/[id]`
+  - `POST /api/fact-sheet/[id]/verify`
+- **UI Components:** `src/app/(portal)/dashboard/fact-sheet/page.tsx`, `src/components/portal/fact-sheet/fact-sheet-client.tsx`, `src/components/portal/fact-sheet/fact-sheet-modal.tsx`.
+- **Unit Tests:** `tests/unit/fact-sheet.test.ts` (19 tests passed: validates schemas, role guards, automatic demotion, approval/rejection lifecycle).
+- **Integration Tests:** `tests/integration/fact-sheet.test.ts` (9 tests passed against isolated Neon PostgreSQL test branch: validates Sales Head creation, DRAFT exclusion from AI, verification flow, AI retrieval inclusion, demotion on update, immediate AI exclusion after demotion, and anti-IDOR authorization rejection).
+
+---
+
+## ADR-011: Slot Capacity Model, Attendance Verification, and Executive Scope Enforcement
+
+- **Status:** Accepted
+- **Date:** 2026-11-08
+- **Deciders:** Principal Engineering Mentor & Implementation Partner
+
+### Context
+Site visits represent high-intent buyer commitments. The system must prevent overbooking, protect slot modification integrity when active bookings exist, verify physical visit attendance (`ATTENDED` vs `NO_SHOW`), and prevent sales executives from tampering with visits of leads assigned to other team members (anti-IDOR).
+
+### Alternatives Considered
+1. **Numeric Slot Capacity Counter:** Add an integer `capacity` column to `VisitSlot`. *Rejected:* Unnecessary schema migration; introduces decrement race conditions.
+2. **1-Capacity Relational Model (Chosen):** Each `VisitSlot` represents a discrete, atomic appointment window (1 booking capacity), enforced relationally by the PostgreSQL partial unique index `one_active_booking_per_slot` (`WHERE booking_status = 'CONFIRMED'`).
+3. **Allowing Premature Attendance Recording:** Allow staff to mark attendance ahead of time. *Rejected:* Violates domain reality; leads cannot be verified as attended before their appointment start time has arrived.
+
+### Decision
+1. **1-Capacity Slot Reservation Model:** Enforced at the PostgreSQL level via partial unique index `one_active_booking_per_slot`. A slot is `AVAILABLE` (0 booked / 1 capacity) or `BOOKED` (1 booked / 1 capacity).
+2. **Slot Modification & Deletion Guards:**
+   - Modifying start/end times or location on a slot with an active confirmed booking is rejected (`409 Conflict`).
+   - Deleting a slot with booking history (even past or cancelled visits) is rejected to preserve attribution audit trails and prevent foreign key cascade errors.
+3. **Temporal Attendance Guard:** Staff can record attendance outcomes only after the visit start time has arrived (`startsAt <= NOW()`) or for historical records (`COMPLETED` + `UNRECORDED`). Cancelled visits or visits with already recorded outcomes are rejected.
+4. **Attendance Outcome State Machine:**
+   - `ATTENDED`: Transitions `bookingStatus = COMPLETED`, records `attendedAt = NOW()`, and automatically transitions the lead's dynamically computed lifecycle stage to `VISITED`.
+   - `NO_SHOW`: Transitions `bookingStatus = COMPLETED`, leaves `attendedAt = null`.
+5. **Server-Side Anti-IDOR Role Scoping:**
+   - `SALES_HEAD`: Full visibility and attendance recording authority across all portfolio visits and slots.
+   - `SALES_EXEC`: Scoped strictly to visits where the buyer lead is assigned to them (`lead.conversations.some.handoff.assignedToId === user.id`). Attempts to record attendance or cancel unassigned visits are rejected with HTTP 409 / 403.
+   - Slot creation, modification, and deletion are restricted strictly to `SALES_HEAD`.
+6. **Dual-Defense Reminder Suppression & Dispatch Boundary:**
+   - Recording attendance (`ATTENDED`/`NO_SHOW`) or cancelling a booking immediately purges all `PENDING` and in-flight `PROCESSING` reminder jobs for that visit in PostgreSQL.
+   - In `ReminderService.processReminderJob`, an atomic pre-dispatch check immediately before calling `notificationProvider` verifies that the job remains active in `PROCESSING` and that the visit remains `CONFIRMED` and `UNRECORDED`, suppressing dispatch for any state changes committed before that query.
+   - *Time-of-Check to Time-of-Use (TOCTOU) Boundary:* If staff records attendance after the pre-dispatch check completes but before the provider function executes, the message will still be dispatched. Holding a database transaction open across remote network I/O is deliberately avoided to prevent connection pool exhaustion and lock starvation. Downstream carrier `idempotencyKey` prevents duplicate deliveries, but cannot recall an authorized in-flight request.
+
+### Trade-offs & Consequences
+- **Positive:**
+  - Zero schema migrations required.
+  - Concurrency safety guaranteed by PostgreSQL partial unique index.
+  - Zero IDOR vulnerability: executives cannot inspect or record attendance on rival leads.
+  - Dynamic pipeline progression: attendance recording immediately cascades into the master lead pipeline without secondary database syncs.
+- **Negative:**
+  - Slots are single-booking windows; group or batch visit tours require staging multiple consecutive slot records.
+
+### Code & Test Evidence
+- **Domain Service:** `src/services/booking/booking.service.ts` (`createSlot`, `updateSlot`, `deleteSlot`, `getAllSlots`, `getSlotMetrics`, `getVisits`, `getVisitMetrics`, `recordAttendance`, `cancelVisitByStaff`).
+- **Validation Schemas:** `src/lib/validations/slot.ts` (`slotQuerySchema`, `createSlotSchema`, `updateSlotSchema`), `src/lib/validations/booking.ts` (`visitQuerySchema`, `recordAttendanceSchema`).
+- **API Endpoints:**
+  - `GET /api/slots`, `POST /api/slots`, `GET /api/slots/metrics`, `PATCH /api/slots/[id]`, `DELETE /api/slots/[id]`
+  - `GET /api/visits`, `GET /api/visits/metrics`, `POST /api/visits/[id]/attendance`, `POST /api/visits/[id]/cancel`
+- **UI Components:** `src/app/(portal)/dashboard/visits/page.tsx`, `src/components/portal/visits/visits-manager-client.tsx`, `src/components/portal/visits/create-slot-modal.tsx`, `src/components/portal/visits/edit-slot-modal.tsx`, `src/components/portal/visits/record-attendance-modal.tsx`.
+- **Unit Tests:** `tests/unit/slot-management.test.ts` (15 tests passed), `tests/unit/visit-attendance.test.ts` (11 tests passed).
+- **Integration Tests:** `tests/integration/visit-attendance.test.ts` (9 tests passed against isolated Neon PostgreSQL test branch: validates slot creation, modification guards, booking, anti-IDOR scoping, attendance recording, dynamic `VISITED` lifecycle transition, and duplicate recording rejection).

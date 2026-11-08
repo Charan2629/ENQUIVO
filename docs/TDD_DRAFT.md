@@ -224,18 +224,20 @@ CREATE UNIQUE INDEX "one_active_booking_per_slot"
 
 | Status | Who can create | Who can approve | AI can use? |
 |---|---|---|---|
-| `VERIFIED` | `SALES_HEAD` (approve action) | `SALES_HEAD` | ✅ Yes |
+| `VERIFIED` | `SALES_HEAD` (approve action) | `SALES_HEAD` | ✅ Yes (if `isActive = true`) |
 | `DRAFT` | `SALES_HEAD` | — | ❌ No |
-| `UNVERIFIED` | System / seed | `SALES_HEAD` | ❌ No |
+| `UNVERIFIED` | System / seed / demoted on edit | `SALES_HEAD` | ❌ No |
 
-### Scope Rules
-- Portfolio-level facts (`PORTFOLIO` scope) cover both projects and must not be presented as individually verified `PROJECT_1` or `PROJECT_2` data
+### Scope Rules & AI Grounding Invariants
+- Portfolio-level facts (`PORTFOLIO` scope) cover both projects and must not be presented as individually verified `PROJECT_1` or `PROJECT_2` data.
 - Seeded `VERIFIED` facts are limited to information explicitly stated in the client brief:
   - 2 live projects in Ahmedabad
   - 420 apartments total
   - 2 BHK and 3 BHK configurations
   - Price range: ₹65 lakh to ₹1.2 crore
-- Any missing project-specific detail, unlisted amenity, or price negotiation request triggers `handoffToExecutive()` immediately
+- Any missing project-specific detail, unlisted amenity, or price negotiation request triggers `handoffToExecutive()` immediately.
+- **Automatic Content Demotion Invariant (`FactSheetService`):** Modifying any content field (`key`, `value`, `scope`, or `projectId`) on an existing `VERIFIED` fact automatically demotes its status to `UNVERIFIED` and sets `verifiedById = null`. This guarantees that unreviewed edits cannot remain active in Gemini grounding context.
+- **AI Grounding Isolation:** `AIConciergeService.getVerifiedFacts()` retrieves records strictly matching `WHERE status = 'VERIFIED' AND isActive = true`. Draft, unverified, demoted, and deactivated entries are completely excluded from model context.
 
 ---
 
@@ -319,21 +321,31 @@ SiteVisit.status:   CONFIRMED ──► CANCELLED
 - Releases `VisitSlot` back to `AVAILABLE` only if `startsAt > now` (past slots remain `BOOKED`).
 - Deletes only `PENDING` reminder jobs for the visit, preventing unwanted dispatches without misusing `FAILED`.
 
-#### 3. Attendance Recording (`recordAttendance`)
+#### 3. Attendance Recording (`recordAttendance`) & Dynamic Lifecycle Progression
 - Supports visits with `(CONFIRMED + UNRECORDED)` (only after `startsAt <= now`) and `(COMPLETED + UNRECORDED)` (historical records).
-- Rejects `CANCELLED` visits or visits where attendance was already recorded.
+- Rejects `CANCELLED` visits or visits where attendance was already recorded (`ATTENDED` or `NO_SHOW`).
 - Transitions `bookingStatus` to `COMPLETED`.
 - Sets `attendedAt` to `now` for `ATTENDED`; keeps it `null` for `NO_SHOW`.
-- Does not modify `VisitSlot` status.
+- Does not modify `VisitSlot` status (remains `BOOKED`).
+- **Dynamic Lifecycle Interlock:** Recording `ATTENDED` automatically transitions the lead's dynamically computed lifecycle stage to `VISITED` across all pipeline views without secondary database syncs (`computeLeadLifecycleStatus`).
+- **Anti-IDOR Scoping:** Enforces that when called by a `SALES_EXEC`, the visit's lead must be assigned to that executive (`lead.conversations.some.handoff.assignedToId === user.id`). Unauthorized attempts are rejected with `409 Conflict`.
 
-#### 4. Concurrency & Integration Tests
-Covered in `tests/integration/booking-service.test.ts` (5 scenarios against isolated Neon branch):
+#### 4. Slot Capacity & Governance Model
+- **1-Capacity Appointment Windows:** Each `VisitSlot` represents an individual, atomic appointment slot (1 capacity), enforced by the PostgreSQL partial unique index `one_active_booking_per_slot` (`WHERE booking_status = 'CONFIRMED'`).
+- **Modification & Deletion Guards:** Modifying slot times or locations is rejected (`409 Conflict`) if an active confirmed booking is attached; deleting slots with booking history is rejected to preserve attribution audit trails and prevent foreign key cascade errors.
+- **Role Permissions:** Slot creation, modification, and deletion are restricted strictly to `SALES_HEAD`.
+
+#### 5. Concurrency & Integration Tests
+Covered in `tests/integration/booking-service.test.ts` (5 scenarios) and `tests/integration/visit-attendance.test.ts` (9 scenarios against isolated Neon branch):
 1. Successful booking, slot reservation, and reminder staging.
 2. Concurrent booking requests via `Promise.all` (1 succeeds, 1 gets `SlotUnavailableError`).
 3. Cancellation, future slot release, and deletion of pending reminder jobs.
 4. Rebooking a released slot with a second lead while preserving historical cancelled visit.
-5. Past-slot rejection and attendance recording for both confirmed visits and historical completed visits.
-- Independent Code Review: **APPROVED** (with low-severity observation that P2002 handling could more precisely inspect the constraint target).
+5. Slot creation, modification guards, and deletion prevention for booked slots.
+6. Anti-IDOR attendance scoping rejecting unassigned executives.
+7. Attendance recording (`ATTENDED` vs `NO_SHOW`) and verification of dynamic `VISITED` lifecycle progression.
+8. Rejection of duplicate attendance recording.
+- Independent Code Review: **APPROVED**.
 
 ---
 
@@ -354,7 +366,8 @@ Covered in `tests/integration/booking-service.test.ts` (5 scenarios against isol
 | DPDP Act 2023 | Re-checks `lead.consentRecord`. If `optedOut === true` or missing, suppresses dispatch and purges unsendable jobs from operational queue (`SKIPPED_OPTED_OUT`, `SKIPPED_NO_CONSENT`), keeping `FAILED` reserved strictly for genuine delivery failures |
 | Delivery Provider | `MockNotificationProvider`: formats appointment time in `Asia/Kolkata` (IST) via `date-fns-tz`, includes recipient name, venue, and `idempotencyKey`, logging audit simulation note without external SMS/WhatsApp network calls |
 | Distributed Systems Limitation | **Crash-After-Dispatch Limitation:** If a serverless worker process dies after successfully dispatching a notification via carrier API but before committing `status = 'SENT'` to PostgreSQL, stale recovery will eventually reclaim the job and retry it, resulting in a duplicate dispatch. Downstream deduplication requires carrier-level idempotency support |
-| Test Coverage | `tests/integration/reminder-service.test.ts` (8 scenarios against isolated Neon test branch): successful processing, cancelled visit suppression, bounded retries with 5m backoff, retry exhaustion to FAILED, atomic claiming under concurrency, DPDP opt-out suppression, missing consent suppression, stale PROCESSING reclamation (<3 attempts), and stale PROCESSING exhaustion (>=3 attempts) |
+| Post-Check TOCTOU Dispatch Boundary | State changes (attendance as `ATTENDED`/`NO_SHOW`, visit cancellation) committed in PostgreSQL prior to the worker's atomic pre-dispatch check will suppress delivery and delete the job. If staff commits attendance after the pre-dispatch check completes but before the provider function begins execution, the message will still be dispatched. Holding a database transaction open across remote network I/O to eliminate this post-check interval is deliberately avoided to prevent connection pool exhaustion and database lock starvation. Upstream provider `idempotencyKey` protects against duplicate deliveries, but does not cancel an authorized in-flight request |
+| Test Coverage | `tests/integration/reminder-service.test.ts` (13 scenarios against isolated Neon test branch): successful processing, cancelled visit suppression, bounded retries with 5m backoff, retry exhaustion to FAILED, atomic claiming under concurrency, DPDP opt-out suppression, missing consent suppression, stale PROCESSING reclamation (<3 attempts), stale PROCESSING exhaustion (>=3 attempts), attended visit suppression, no-show suppression, in-flight processing job purge on attendance, and pre-dispatch atomic guard suppression |
 
 ---
 
@@ -457,6 +470,8 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 | D-028 | 2026-11-07 | Dynamic Relational Derivation of Lead Lifecycle Status & Role-Based Record-Level Access Control (`LeadService`, `src/lib/validations/lead.ts`, `ADR-008`) | The brief requires tracking lead lifecycle stages (`NEW`, `ENGAGED`, `ESCALATED`, `BOOKED`, `VISITED`) and enforcing strict data isolation between staff roles (`SALES_HEAD` vs `SALES_EXEC`). Rather than mutating the schema or introducing a fragile desynchronized status column, `computeLeadLifecycleStatus()` evaluates status dynamically from authoritative relational events (`VISITED` > `BOOKED` > `ESCALATED` > `ENGAGED` > `NEW`). Database queries map these lifecycle states to native Prisma relational queries (`siteVisits.some`, `conversations.some`), allowing PostgreSQL to handle `COUNT`, `SKIP`, and `TAKE` pagination directly. Data isolation is strictly enforced on the server via role-based record-level access control: `SALES_HEAD` queries all active leads (`where: { deletedAt: null }`), while `SALES_EXEC` queries are scoped to leads assigned to that specific executive via conversation handoffs (`where: { deletedAt: null, conversations: { some: { handoff: { assignedToId: user.id } } } }`). Detail retrieval (`getLeadDetail`) applies the same scope and returns `null` (HTTP 404) for unauthorized leads to eliminate IDOR enumeration | Schema mutation (adding mutable `status` and `assignedToId` to `Lead`) — rejected (violates schema lock, risks dual-source-of-truth desynchronization bugs); Client-side filtering — rejected (leaks confidential buyer data over the wire and introduces IDOR vulnerability) |
 | D-029 | 2026-11-08 | Handoff Queue, Role-Scoped Ownership, In-Conversation System Audit Trails, and Boundary Isolation (`HandoffService`, `src/lib/chat-message.ts`, `ADR-009`) | Managing AI and buyer escalations requires role-scoped queues and ownership controls without schema alterations. `getStaffHandoffScope` enforces `{}` for `SALES_HEAD` and `{ assignedToId: user.id }` for `SALES_EXEC`, with anti-IDOR detail lookup returning `null` (404) for unauthorized records. `assignHandoff` executes inside `prisma.$transaction` under serialized Last-Write-Wins (LWW) concurrency, asserting `SALES_HEAD` authorization and valid `SALES_EXEC` target role (the schema intentionally has no independent `isActive` flag; staff suspension is governed by role demotion to `BUYER` or user deletion), updating `assignedToId` and appending an internal audit entry (`ChatMessageRole.AI` with `[Ownership Assigned]` or `[Ownership Reassigned]`) to preserve accountability. Strict boundary isolation (`filterBuyerFacingMessages`, `isInternalAuditMessage`) ensures internal audit messages are visible only to staff in `TranscriptModal` and `/dashboard/leads/[id]`, while being completely stripped from buyer APIs (`/api/chat/session`), buyer UI, and Gemini prompt context. Because `LeadService.getStaffLeadScope()` derives lead ownership via `conversations.some.handoff.assignedToId`, assigning an escalation immediately updates lead visibility across `/dashboard/leads` without separate database updates | Schema mutation (adding `HandoffAssignmentHistory` table) — rejected (violates schema lock protocol); Client-side filtering — rejected (vulnerable to IDOR data leaks) |
 | D-030 | 2026-11-08 | Database Seed Safety Guard, Exact Development Endpoint Allowlist, and Destructive Baseline Reset Invariants (`src/lib/seed-guard.ts`) | The seed protocol performs a table-wide destructive wipe across all 14 schema models before inserting the Day-0 baseline dataset. To prevent catastrophic data loss in production, accidental wiping of the isolated test branch, or loss of evaluator test records: (1) `validateSeedTarget` enforces that seeding is strictly blocked in production (`NODE_ENV === "production"`); (2) requires explicit authorization flag `ALLOW_DESTRUCTIVE_SEED === "true"`; (3) enforces an exact hostname allowlist (`APPROVED_SEED_ENDPOINTS`) matching only the approved Neon development endpoint (`ep-frosty-tooth-b3446kf8`, direct and pooled variants), failing closed on test database (`ep-mute-butterfly-b3a54tpa`), localhost, or unknown endpoints; and (4) runs before Prisma client initialization or database connection without logging credentials. Crucially, documentation establishes that deterministic seeding is destructive by design and must never be executed after evaluator testing begins unless a full Day-0 reset is deliberately intended | Blacklist-only filtering — rejected (fails closed on unknown hosts); Allowing seed without flag — rejected (accidental wipe risk); Allowing seed against test branch — rejected (pollutes integration test state) |
+| D-031 | 2026-11-08 | Fact Sheet Approval Governance, Content Demotion Invariant, and AI Grounding Isolation (`FactSheetService`, `src/app/api/fact-sheet`, `ADR-010`) | Implements dual-flag property governance (`status = VERIFIED` AND `isActive = true`) governing Gemini AI context retrieval without schema alterations. Grounding data integrity is preserved through three strict invariants: (1) Server-side role gating restricts all creation, modification, verification (`POST /api/fact-sheet/[id]/verify`), and deletion to `SALES_HEAD`, rejecting `SALES_EXEC` with HTTP 403; (2) Automatic Content Demotion Invariant: if any content field (`key`, `value`, `scope`, or `projectId`) on an existing `VERIFIED` fact is modified, `updateFactSheet` automatically demotes the record's status to `UNVERIFIED` and sets `verifiedById = null`. This eliminates stealth modification vulnerabilities where an unapproved price or amenity change could bypass human review; (3) AI Concierge retrieval (`aiService.getVerifiedFacts`) queries strictly `WHERE status = 'VERIFIED' AND isActive = true`, guaranteeing that draft, unverified, demoted, or deactivated facts never enter Gemini's prompt context | Unconstrained direct editing — rejected (high hallucination risk); Dual-table architecture (DraftFacts vs VerifiedFacts) — rejected (violates 14-model schema lock); Client-side status enforcement — rejected (vulnerable to API bypassing) |
+| D-032 | 2026-11-08 | Slot Capacity Model, Attendance Verification, Dynamic Lifecycle Progression, and Anti-IDOR Scoping (`BookingService`, `src/app/api/slots`, `src/app/api/visits`, `ADR-011`) | Operationalizes site visit scheduling, slot capacity governance, and attendance recording without schema alterations: (1) 1-Capacity Slot Reservation Model enforced at the PostgreSQL level via partial unique index `one_active_booking_per_slot` (`WHERE booking_status = 'CONFIRMED'`), ensuring each slot represents an atomic, single-buyer appointment window; (2) Slot Modification & Deletion Guards reject modifying slot times or venues (`409 Conflict`) if an active confirmed booking is attached, and reject deleting slots with booking history to preserve attribution audit trails; (3) Attendance Outcome Recording allows staff to mark attendance as `ATTENDED` or `NO_SHOW` only after visit start time has arrived (`startsAt <= NOW()`) or for historical records (`COMPLETED` + `UNRECORDED`). Cancelled visits or visits with already recorded outcomes are rejected; (4) Dynamic Lifecycle Interlock: recording `ATTENDED` transitions `bookingStatus` to `COMPLETED`, sets `attendedAt = NOW()`, and automatically transitions the lead's dynamically computed lifecycle status to `VISITED` across all pipeline views; (5) Anti-IDOR Executive Scoping gives `SALES_HEAD` full visibility across all visits and slots, while `SALES_EXEC` is strictly scoped to visits where the buyer lead is assigned to them (`lead.conversations.some.handoff.assignedToId === user.id`). Attempts by an executive to record attendance or cancel an unassigned lead's visit are rejected with HTTP 409 / 403 | Adding mutable numeric capacity column — rejected (violates 14-model schema lock, introduces race conditions); Premature attendance recording — rejected (violates domain reality); Client-side scoping — rejected (IDOR vulnerability) |
 
 ---
 
@@ -488,9 +503,9 @@ Supports EN (English), HI (Hindi), GU (Gujarati). Language detected from buyer p
 | M5 | Buyer Concierge Experience (Landing Page + Secure Mobile Concierge UI & Functional AI) | ✅ Complete | `27d0d8d` |
 | M6 Phase 1 | Staff Authentication & Operations Portal Shell (Argon2id, DB role revalidation, login throttling, CSRF, layout) | ✅ Complete | `bf7e04b` |
 | M6 Phase 2 | Lead Pipeline & Ingestion Interface | ✅ Complete | `ecf0655` |
-| M6 Phase 3 | Salesperson Assignment & Handoff Management Queue | ✅ Complete | Pending commit |
-| M6 Phase 4 | Site Visits, Attendance Management & Fact Sheet Administration | ⬜ Next | — |
-| M6 Phase 5 | Source Analytics, E2E QA, and Integration Review | ⬜ Pending | — |
+| M6 Phase 3 | Salesperson Assignment & Handoff Management Queue | ✅ Complete | `1a0b08f` |
+| M6 Phase 4 | Site Visits, Attendance Management & Fact Sheet Administration | ✅ Complete | Pending verification review |
+| M6 Phase 5 | Source Analytics, E2E QA, and Integration Review | ⬜ Next | — |
 | M7 | Source Attribution & ROI Dashboard + Complete Vitest Suite | ⬜ Pending | — |
 | M8 | Final Submission Packaging (TDD.pdf + deployment.md zip, <25MB, zero secrets) | ⬜ Pending | — |
 

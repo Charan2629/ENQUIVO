@@ -1,4 +1,9 @@
-import { PrismaClient, ReminderStatus, BookingStatus } from "@prisma/client";
+import {
+  PrismaClient,
+  ReminderStatus,
+  BookingStatus,
+  AttendanceOutcome,
+} from "@prisma/client";
 import { prisma as defaultPrisma } from "@/lib/prisma";
 import {
   MockNotificationProvider,
@@ -184,8 +189,11 @@ export class ReminderService {
       };
     }
 
-    // 3. Recheck booking status: Never send reminders for non-CONFIRMED visits
-    if (job.siteVisit.bookingStatus !== BookingStatus.CONFIRMED) {
+    // 3. Recheck booking & attendance status: Never send reminders if visit is completed (ATTENDED/NO_SHOW), cancelled, or not CONFIRMED
+    if (
+      job.siteVisit.bookingStatus !== BookingStatus.CONFIRMED ||
+      job.siteVisit.attendanceOutcome !== AttendanceOutcome.UNRECORDED
+    ) {
       // Clean up orphaned reminder job without marking FAILED
       await this.db.reminderJob.delete({
         where: { id: job.id },
@@ -194,7 +202,7 @@ export class ReminderService {
       return {
         jobId,
         status: "SKIPPED_VISIT_NOT_CONFIRMED",
-        reason: `SiteVisit is ${job.siteVisit.bookingStatus}, not CONFIRMED`,
+        reason: `SiteVisit is ${job.siteVisit.bookingStatus} (attendance: ${job.siteVisit.attendanceOutcome}), not active CONFIRMED`,
       };
     }
 
@@ -240,7 +248,33 @@ export class ReminderService {
       };
     }
 
-    // 6. Dispatch simulated notification
+    // 6. Pre-dispatch atomic check: suppresses delivery if attendance was recorded or booking was
+    // cancelled prior to this query. Note: A tiny TOCTOU window remains between this query returning
+    // and the notificationProvider network call starting. Holding a database transaction open across
+    // external network I/O is deliberately avoided to prevent connection pool exhaustion and lock contention.
+    // Provider idempotencyKey protects against duplicate deliveries, but cannot cancel an authorized in-flight dispatch.
+    const activeJob = await this.db.reminderJob.findFirst({
+      where: {
+        id: job.id,
+        status: ReminderStatus.PROCESSING,
+        siteVisit: {
+          bookingStatus: BookingStatus.CONFIRMED,
+          attendanceOutcome: AttendanceOutcome.UNRECORDED,
+        },
+      },
+    });
+
+    if (!activeJob) {
+      // Concurrent staff transaction marked attendance, cancelled booking, or purged in-flight job
+      await this.db.reminderJob.deleteMany({ where: { id: job.id } });
+      return {
+        jobId,
+        status: "SKIPPED_VISIT_NOT_CONFIRMED",
+        reason: "SiteVisit was completed, cancelled, or purged by concurrent staff action during processing",
+      };
+    }
+
+    // 7. Dispatch simulated notification
     try {
       const result = await this.notificationProvider({
         recipientPhone: lead.phone,

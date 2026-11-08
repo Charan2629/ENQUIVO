@@ -285,13 +285,23 @@ describe("BookingService Integration Tests (Isolated Neon Test Branch)", () => {
     });
     expect(dbSlot.status).toBe(VisitSlotStatus.BOOKED);
 
-    // Verify cannot record attendance twice
-    await expect(
-      bookingService.recordAttendance({
-        visitId: activeVisit.id,
-        outcome: AttendanceOutcome.NO_SHOW,
-      })
-    ).rejects.toThrow("Attendance has already been recorded");
+    // Legitimate attendance correction: correct ATTENDED to NO_SHOW (attendedAt becomes null)
+    const correctedToNoShow = await bookingService.recordAttendance({
+      visitId: activeVisit.id,
+      outcome: AttendanceOutcome.NO_SHOW,
+    });
+    expect(correctedToNoShow.bookingStatus).toBe(BookingStatus.COMPLETED);
+    expect(correctedToNoShow.attendanceOutcome).toBe(AttendanceOutcome.NO_SHOW);
+    expect(correctedToNoShow.attendedAt).toBeNull();
+
+    // Legitimate attendance correction: correct back from NO_SHOW to ATTENDED (attendedAt is re-set)
+    const correctedBackToAttended = await bookingService.recordAttendance({
+      visitId: activeVisit.id,
+      outcome: AttendanceOutcome.ATTENDED,
+    });
+    expect(correctedBackToAttended.bookingStatus).toBe(BookingStatus.COMPLETED);
+    expect(correctedBackToAttended.attendanceOutcome).toBe(AttendanceOutcome.ATTENDED);
+    expect(correctedBackToAttended.attendedAt).not.toBeNull();
 
     // 5C. Verify an already COMPLETED + UNRECORDED visit (like Hardik Patel's historical seed) can have attendance recorded
     const completedSlot = await createTestSlot(

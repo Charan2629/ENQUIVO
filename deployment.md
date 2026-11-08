@@ -151,6 +151,15 @@ To access the staff operations portal:
 3. Authenticated sessions issue an HTTP-only `eq_staff_session` bearer cookie valid for 12 hours (embedding `rawToken` in an HMAC-signed envelope) with persistent PostgreSQL revocation tracking (`StaffSession` model, migration `20261107065456_add_staff_sessions`, storing only `tokenHash = SHA-256(rawToken)`) upon logout.
 4. Database role revalidation ensures that deleted accounts, demoted roles, or revoked tokens are rejected immediately on every request.
 
+### Operational Portal Modules & Access Control (Milestone 6)
+
+| Portal Route | Description | `SALES_HEAD` Access | `SALES_EXEC` Access |
+|---|---|---|---|
+| `/dashboard/leads` | Unified Lead Pipeline & Dossiers | Portfolio-wide (all leads, multi-touch attribution, AI transcripts) | Assigned leads only (`lead.conversations.some.handoff.assignedToId == user.id`) |
+| `/dashboard/handoffs` | Handoff Queue & Workload Distribution | Full portfolio queue, reassign executives, inspect AI transcripts, resolve | Assigned escalations only, inspect AI transcripts, resolve |
+| `/dashboard/fact-sheet` | Fact Sheet Approval Governance | Full access (create, edit, verify, reject); edits demote verified facts to `UNVERIFIED` | Forbidden (HTTP 403) |
+| `/dashboard/visits` | Site Visits Ledger & Slot Manager | Portfolio visits, mark attendance, cancel visits, create slots, modify/delete unbooked slots | Assigned visits only, mark attendance, cancel visits; read-only slot list |
+
 ### PostgreSQL Partial Unique Index Verification
 
 After migration, verify the partial index directly in PostgreSQL:
@@ -234,7 +243,7 @@ npm run test:coverage
 # npm run test:e2e:ui
 ```
 
-> **Current state:** `npm test` — ✅ CONFIGURED & PASSING (144/144 unit tests across 9 files). `npm run test:integration` — ✅ CONFIGURED & PASSING (75/75 integration tests across 9 files against isolated Neon test branch). `npm run test:e2e` — NOT CONFIGURED (configured in Milestone 7).
+> **Current state:** `npm test` — ✅ CONFIGURED & PASSING (191/191 unit tests across 12 files). `npm run test:integration` — ✅ CONFIGURED & PASSING (98/98 integration tests across 11 files against isolated Neon test branch). `npm run test:e2e` — NOT CONFIGURED (configured in Milestone 7).
 
 ---
 

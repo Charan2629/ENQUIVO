@@ -42,3 +42,22 @@ export const recordAttendanceSchema = z.object({
 
 export type RecordAttendanceInput = z.infer<typeof recordAttendanceSchema>;
 
+/**
+ * Validates site visit query parameters for staff dashboard listing.
+ */
+export const visitQuerySchema = z.object({
+  timeframe: z
+    .enum(["ALL", "UPCOMING", "PAST", "TODAY"])
+    .default("ALL"),
+  bookingStatus: z
+    .enum(["ALL", "CONFIRMED", "CANCELLED", "COMPLETED"])
+    .default("ALL"),
+  attendanceOutcome: z
+    .enum(["ALL", AttendanceOutcome.UNRECORDED, AttendanceOutcome.ATTENDED, AttendanceOutcome.NO_SHOW])
+    .default("ALL"),
+  search: z.string().max(100).optional(),
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+export type ValidatedVisitQuery = z.infer<typeof visitQuerySchema>;

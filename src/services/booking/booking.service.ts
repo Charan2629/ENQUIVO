@@ -8,7 +8,9 @@ import {
   AttendanceOutcome,
   ReminderType,
   ReminderStatus,
+  UserRole,
 } from "@prisma/client";
+import { formatInTimeZone } from "date-fns-tz";
 import { prisma as defaultPrisma } from "@/lib/prisma";
 import {
   BookVisitInput,
@@ -19,7 +21,23 @@ import {
   getAvailableSlotsSchema,
   RecordAttendanceInput,
   recordAttendanceSchema,
+  ValidatedVisitQuery,
+  visitQuerySchema,
 } from "@/lib/validations/booking";
+import {
+  CreateSlotInput,
+  createSlotSchema,
+  UpdateSlotInput,
+  updateSlotSchema,
+  ValidatedSlotQuery,
+  slotQuerySchema,
+} from "@/lib/validations/slot";
+import {
+  VisitSlotItem,
+  SiteVisitItem,
+  VisitPagination,
+  SiteVisitMetrics,
+} from "@/types";
 
 /**
  * Custom error thrown when a slot cannot be booked because it is already booked,
@@ -263,11 +281,11 @@ export class BookingService {
           });
         }
 
-        // 3. Clean up only PENDING reminder jobs for this visit
+        // 3. Clean up PENDING and in-flight PROCESSING reminder jobs for this visit
         await tx.reminderJob.deleteMany({
           where: {
             siteVisitId: visit.id,
-            status: ReminderStatus.PENDING,
+            status: { in: [ReminderStatus.PENDING, ReminderStatus.PROCESSING] },
           },
         });
 
@@ -292,7 +310,22 @@ export class BookingService {
    * 6. Sets attendedAt to NOW() for ATTENDED; keeps it null for NO_SHOW.
    * 7. Does NOT modify the VisitSlot status (it remains BOOKED).
    */
-  async recordAttendance(input: RecordAttendanceInput): Promise<SiteVisit> {
+  /**
+   * Records or corrects attendance outcome for a visit (Sales Portal).
+   *
+   * Guarantees:
+   * 1. Supports visits in (CONFIRMED + UNRECORDED) or (COMPLETED + UNRECORDED), as well as legitimate attendance corrections.
+   * 2. Rejects CANCELLED visits.
+   * 3. For CONFIRMED visits, does not allow recording attendance before the scheduled visit start time.
+   * 4. Transitions bookingStatus to COMPLETED.
+   * 5. Sets attendedAt to NOW() for ATTENDED; clears it to null for NO_SHOW.
+   * 6. Deletes any remaining PENDING reminder jobs for this visit.
+   * 7. RBAC / IDOR defense: When called by a SALES_EXEC, asserts that the lead is assigned to that executive.
+   */
+  async recordAttendance(
+    input: RecordAttendanceInput,
+    staffUser?: { id: string; role: UserRole }
+  ): Promise<SiteVisit> {
     const validated = recordAttendanceSchema.parse(input);
     const now = new Date();
 
@@ -300,21 +333,38 @@ export class BookingService {
       async (tx) => {
         const visit = await tx.siteVisit.findUnique({
           where: { id: validated.visitId },
-          include: { slot: true },
+          include: {
+            slot: true,
+            lead: {
+              include: {
+                conversations: {
+                  include: {
+                    handoff: true,
+                  },
+                },
+              },
+            },
+          },
         });
 
         if (!visit) {
           throw new BookingNotFoundError("Site visit not found");
         }
 
-        if (visit.bookingStatus === BookingStatus.CANCELLED) {
-          throw new BookingConflictError("Cannot record attendance for a CANCELLED visit");
+        // Anti-IDOR check for Sales Executives: must be assigned to this lead
+        if (staffUser && staffUser.role === UserRole.SALES_EXEC) {
+          const isAssigned = visit.lead.conversations.some(
+            (c) => c.handoff?.assignedToId === staffUser.id
+          );
+          if (!isAssigned) {
+            throw new BookingConflictError(
+              "You are not authorized to record attendance for a lead assigned to another executive"
+            );
+          }
         }
 
-        if (visit.attendanceOutcome !== AttendanceOutcome.UNRECORDED) {
-          throw new BookingConflictError(
-            `Attendance has already been recorded as ${visit.attendanceOutcome}`
-          );
+        if (visit.bookingStatus === BookingStatus.CANCELLED) {
+          throw new BookingConflictError("Cannot record attendance for a CANCELLED visit");
         }
 
         // Temporal check for CONFIRMED visits: cannot record attendance before visit begins
@@ -322,6 +372,19 @@ export class BookingService {
           throw new BookingConflictError(
             "Cannot record attendance before the scheduled visit has started"
           );
+        }
+
+        // Clean up any remaining PENDING or in-flight PROCESSING reminder jobs for this visit
+        await tx.reminderJob.deleteMany({
+          where: {
+            siteVisitId: visit.id,
+            status: { in: [ReminderStatus.PENDING, ReminderStatus.PROCESSING] },
+          },
+        });
+
+        // Idempotent: if outcome and status already match, return existing visit
+        if (visit.attendanceOutcome === validated.outcome && visit.bookingStatus === BookingStatus.COMPLETED) {
+          return visit;
         }
 
         return tx.siteVisit.update({
@@ -339,5 +402,529 @@ export class BookingService {
       }
     );
   }
+
+  // ============================================================================
+  // Slot Management Methods (M6.4)
+  // ============================================================================
+
+  /**
+   * Creates a new site visit slot. Restricted to SALES_HEAD.
+   */
+  async createSlot(
+    input: CreateSlotInput,
+    staffUser: { id: string; role: UserRole }
+  ): Promise<VisitSlotItem> {
+    if (staffUser.role !== UserRole.SALES_HEAD) {
+      throw new BookingConflictError("Only Sales Head can create appointment slots");
+    }
+
+    const validated = createSlotSchema.parse(input);
+    const now = new Date();
+
+    if (validated.startsAt <= now) {
+      throw new BookingConflictError("Slot start time must be in the future");
+    }
+
+    const slot = await this.db.visitSlot.create({
+      data: {
+        startsAt: validated.startsAt,
+        endsAt: validated.endsAt,
+        location: validated.location,
+        status: VisitSlotStatus.AVAILABLE,
+      },
+    });
+
+    return {
+      id: slot.id,
+      startsAt: slot.startsAt,
+      endsAt: slot.endsAt,
+      startsAtIST: formatInTimeZone(slot.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a 'IST'"),
+      endsAtIST: formatInTimeZone(slot.endsAt, "Asia/Kolkata", "hh:mm a 'IST'"),
+      status: slot.status,
+      location: slot.location,
+      hasConfirmedBooking: false,
+      activeBooking: null,
+      totalVisitsCount: 0,
+    };
+  }
+
+  /**
+   * Updates an existing appointment slot. Restricted to SALES_HEAD.
+   * Modifying slots with an active CONFIRMED booking is rejected to prevent appointment corruption.
+   */
+  async updateSlot(
+    id: string,
+    input: UpdateSlotInput,
+    staffUser: { id: string; role: UserRole }
+  ): Promise<VisitSlotItem> {
+    if (staffUser.role !== UserRole.SALES_HEAD) {
+      throw new BookingConflictError("Only Sales Head can modify appointment slots");
+    }
+
+    const validated = updateSlotSchema.parse(input);
+    const now = new Date();
+
+    const existing = await this.db.visitSlot.findUnique({
+      where: { id },
+      include: {
+        siteVisits: {
+          where: { bookingStatus: BookingStatus.CONFIRMED },
+          include: { lead: true },
+        },
+      },
+    });
+
+    if (!existing) {
+      throw new BookingNotFoundError(`Appointment slot ${id} not found`);
+    }
+
+    if (existing.siteVisits.length > 0) {
+      throw new BookingConflictError(
+        "Cannot modify an appointment slot with an active confirmed booking"
+      );
+    }
+
+    const newStartsAt = validated.startsAt ?? existing.startsAt;
+    const newEndsAt = validated.endsAt ?? existing.endsAt;
+
+    if (newEndsAt <= newStartsAt) {
+      throw new BookingConflictError("End time must be after start time");
+    }
+
+    if (validated.startsAt && validated.startsAt <= now) {
+      throw new BookingConflictError("Updated start time must be in the future");
+    }
+
+    const updated = await this.db.visitSlot.update({
+      where: { id },
+      data: {
+        startsAt: newStartsAt,
+        endsAt: newEndsAt,
+        location: validated.location ?? existing.location,
+      },
+      include: {
+        _count: {
+          select: { siteVisits: true },
+        },
+      },
+    });
+
+    return {
+      id: updated.id,
+      startsAt: updated.startsAt,
+      endsAt: updated.endsAt,
+      startsAtIST: formatInTimeZone(updated.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a 'IST'"),
+      endsAtIST: formatInTimeZone(updated.endsAt, "Asia/Kolkata", "hh:mm a 'IST'"),
+      status: updated.status,
+      location: updated.location,
+      hasConfirmedBooking: false,
+      activeBooking: null,
+      totalVisitsCount: updated._count.siteVisits,
+    };
+  }
+
+  /**
+   * Deletes an appointment slot. Restricted to SALES_HEAD.
+   * Slots with any booking history (even cancelled visits) are preserved for attribution integrity.
+   */
+  async deleteSlot(
+    id: string,
+    staffUser: { id: string; role: UserRole }
+  ): Promise<{ success: boolean; id: string }> {
+    if (staffUser.role !== UserRole.SALES_HEAD) {
+      throw new BookingConflictError("Only Sales Head can delete appointment slots");
+    }
+
+    const existing = await this.db.visitSlot.findUnique({
+      where: { id },
+      include: {
+        _count: {
+          select: { siteVisits: true },
+        },
+      },
+    });
+
+    if (!existing) {
+      throw new BookingNotFoundError(`Appointment slot ${id} not found`);
+    }
+
+    if (existing._count.siteVisits > 0) {
+      throw new BookingConflictError(
+        "Cannot delete an appointment slot with booking history. Records are preserved for attribution audits."
+      );
+    }
+
+    await this.db.visitSlot.delete({
+      where: { id },
+    });
+
+    return { success: true, id };
+  }
+
+  /**
+   * Retrieves all slots matching query filters for the Slot Calendar view.
+   */
+  async getAllSlots(input?: ValidatedSlotQuery): Promise<VisitSlotItem[]> {
+    const validated = slotQuerySchema.parse(input ?? {});
+    const now = new Date();
+
+    const where: Prisma.VisitSlotWhereInput = {};
+
+    if (validated.status !== "ALL") {
+      where.status = validated.status;
+    }
+
+    if (!validated.includePast) {
+      where.startsAt = { gt: now };
+    }
+
+    if (validated.from || validated.to) {
+      where.startsAt = {
+        ...(where.startsAt && typeof where.startsAt === "object" ? where.startsAt : {}),
+        ...(validated.from ? { gte: validated.from } : {}),
+        ...(validated.to ? { lte: validated.to } : {}),
+      };
+    }
+
+    const rows = await this.db.visitSlot.findMany({
+      where,
+      orderBy: { startsAt: "asc" },
+      take: validated.limit,
+      include: {
+        siteVisits: {
+          where: { bookingStatus: BookingStatus.CONFIRMED },
+          include: {
+            lead: {
+              select: {
+                id: true,
+                name: true,
+                phone: true,
+                leadCode: true,
+              },
+            },
+          },
+        },
+        _count: {
+          select: { siteVisits: true },
+        },
+      },
+    });
+
+    return rows.map((slot) => {
+      const activeVisit = slot.siteVisits[0] ?? null;
+      return {
+        id: slot.id,
+        startsAt: slot.startsAt,
+        endsAt: slot.endsAt,
+        startsAtIST: formatInTimeZone(slot.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a 'IST'"),
+        endsAtIST: formatInTimeZone(slot.endsAt, "Asia/Kolkata", "hh:mm a 'IST'"),
+        status: slot.status,
+        location: slot.location,
+        hasConfirmedBooking: Boolean(activeVisit),
+        activeBooking: activeVisit
+          ? {
+              visitId: activeVisit.id,
+              leadId: activeVisit.lead.id,
+              leadName: activeVisit.lead.name,
+              leadPhone: activeVisit.lead.phone,
+              leadCode: activeVisit.lead.leadCode,
+              bookingStatus: activeVisit.bookingStatus,
+            }
+          : null,
+        totalVisitsCount: slot._count.siteVisits,
+      };
+    });
+  }
+
+  /**
+   * Live slot metrics for dashboard counters.
+   */
+  async getSlotMetrics(): Promise<{
+    totalSlots: number;
+    availableSlots: number;
+    bookedSlots: number;
+    upcomingSlots: number;
+  }> {
+    const now = new Date();
+    const [totalSlots, availableSlots, bookedSlots, upcomingSlots] = await Promise.all([
+      this.db.visitSlot.count(),
+      this.db.visitSlot.count({
+        where: { status: VisitSlotStatus.AVAILABLE, startsAt: { gt: now } },
+      }),
+      this.db.visitSlot.count({
+        where: { status: VisitSlotStatus.BOOKED },
+      }),
+      this.db.visitSlot.count({
+        where: { startsAt: { gt: now } },
+      }),
+    ]);
+
+    return { totalSlots, availableSlots, bookedSlots, upcomingSlots };
+  }
+
+  // ============================================================================
+  // Site Visit & Attendance Methods (M6.4)
+  // ============================================================================
+
+  /**
+   * Retrieves a paginated list of site visits with server-side role scoping,
+   * timeframe filtering, status filtering, and keyword search.
+   */
+  async getVisits(
+    input: ValidatedVisitQuery,
+    staffUser: { id: string; role: UserRole }
+  ): Promise<{ visits: SiteVisitItem[]; pagination: VisitPagination }> {
+    const validated = visitQuerySchema.parse(input);
+    const now = new Date();
+
+    const andConditions: Prisma.SiteVisitWhereInput[] = [];
+
+    // 1. Role-based scoping (IDOR defense)
+    if (staffUser.role === UserRole.SALES_EXEC) {
+      andConditions.push({
+        lead: {
+          conversations: {
+            some: {
+              handoff: {
+                assignedToId: staffUser.id,
+              },
+            },
+          },
+        },
+      });
+    } else if (staffUser.role !== UserRole.SALES_HEAD) {
+      throw new BookingConflictError("Staff permissions required to access site visits");
+    }
+
+    // 2. Booking status filter
+    if (validated.bookingStatus !== "ALL") {
+      andConditions.push({
+        bookingStatus: validated.bookingStatus as BookingStatus,
+      });
+    }
+
+    // 3. Attendance outcome filter
+    if (validated.attendanceOutcome !== "ALL") {
+      andConditions.push({
+        attendanceOutcome: validated.attendanceOutcome as AttendanceOutcome,
+      });
+    }
+
+    // 4. Timeframe filter (computed relative to Slot.startsAt)
+    if (validated.timeframe === "UPCOMING") {
+      andConditions.push({
+        slot: { startsAt: { gt: now } },
+      });
+    } else if (validated.timeframe === "PAST") {
+      andConditions.push({
+        slot: { startsAt: { lte: now } },
+      });
+    } else if (validated.timeframe === "TODAY") {
+      const todayISTStr = formatInTimeZone(now, "Asia/Kolkata", "yyyy-MM-dd");
+      const startOfTodayIST = new Date(`${todayISTStr}T00:00:00+05:30`);
+      const endOfTodayIST = new Date(`${todayISTStr}T23:59:59.999+05:30`);
+      andConditions.push({
+        slot: {
+          startsAt: {
+            gte: startOfTodayIST,
+            lte: endOfTodayIST,
+          },
+        },
+      });
+    }
+
+    // 5. Keyword search (lead name, phone, or leadCode)
+    if (validated.search && validated.search.trim() !== "") {
+      const q = validated.search.trim();
+      andConditions.push({
+        lead: {
+          OR: [
+            { name: { contains: q, mode: "insensitive" } },
+            { phone: { contains: q } },
+            { leadCode: { contains: q, mode: "insensitive" } },
+          ],
+        },
+      });
+    }
+
+    const where: Prisma.SiteVisitWhereInput =
+      andConditions.length > 0 ? { AND: andConditions } : {};
+
+    const [total, rows] = await Promise.all([
+      this.db.siteVisit.count({ where }),
+      this.db.siteVisit.findMany({
+        where,
+        skip: (validated.page - 1) * validated.limit,
+        take: validated.limit,
+        orderBy: {
+          slot: {
+            startsAt: validated.timeframe === "UPCOMING" ? "asc" : "desc",
+          },
+        },
+        include: {
+          slot: true,
+          lead: {
+            include: {
+              project: { select: { name: true } },
+              conversations: {
+                orderBy: { startedAt: "desc" },
+                include: {
+                  handoff: {
+                    include: {
+                      assignedTo: { select: { id: true, name: true, email: true } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+
+    const visits: SiteVisitItem[] = rows.map((v) => {
+      const isPast = v.slot.startsAt <= now;
+      const isEligibleForAttendance =
+        (v.bookingStatus === BookingStatus.CONFIRMED && isPast) ||
+        (v.bookingStatus === BookingStatus.COMPLETED);
+
+      // Find assigned salesperson from conversations handoff
+      const assignedTo =
+        v.lead.conversations.find((c) => c.handoff?.assignedTo)?.handoff?.assignedTo ?? null;
+
+      return {
+        id: v.id,
+        slotId: v.slotId,
+        leadId: v.leadId,
+        bookingStatus: v.bookingStatus,
+        attendanceOutcome: v.attendanceOutcome,
+        bookedAt: v.bookedAt,
+        cancelledAt: v.cancelledAt,
+        attendedAt: v.attendedAt,
+        startsAt: v.slot.startsAt,
+        endsAt: v.slot.endsAt,
+        startsAtIST: formatInTimeZone(v.slot.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a 'IST'"),
+        endsAtIST: formatInTimeZone(v.slot.endsAt, "Asia/Kolkata", "hh:mm a 'IST'"),
+        location: v.slot.location,
+        isPast,
+        isEligibleForAttendance,
+        lead: {
+          id: v.lead.id,
+          leadCode: v.lead.leadCode,
+          name: v.lead.name,
+          phone: v.lead.phone,
+          email: v.lead.email,
+          projectName: v.lead.project?.name ?? null,
+        },
+        assignedTo,
+      };
+    });
+
+    return {
+      visits,
+      pagination: {
+        total,
+        page: validated.page,
+        limit: validated.limit,
+        totalPages: Math.max(1, Math.ceil(total / validated.limit)),
+      },
+    };
+  }
+
+  /**
+   * Computes role-scoped site visit metrics.
+   */
+  async getVisitMetrics(
+    staffUser: { id: string; role: UserRole }
+  ): Promise<SiteVisitMetrics> {
+    const now = new Date();
+    const baseWhere: Prisma.SiteVisitWhereInput = {};
+
+    if (staffUser.role === UserRole.SALES_EXEC) {
+      baseWhere.lead = {
+        conversations: {
+          some: {
+            handoff: {
+              assignedToId: staffUser.id,
+            },
+          },
+        },
+      };
+    }
+
+    const [totalVisits, confirmedCount, attendedCount, noShowCount, cancelledCount, pendingAttendanceCount] =
+      await Promise.all([
+        this.db.siteVisit.count({ where: baseWhere }),
+        this.db.siteVisit.count({
+          where: { ...baseWhere, bookingStatus: BookingStatus.CONFIRMED },
+        }),
+        this.db.siteVisit.count({
+          where: { ...baseWhere, attendanceOutcome: AttendanceOutcome.ATTENDED },
+        }),
+        this.db.siteVisit.count({
+          where: { ...baseWhere, attendanceOutcome: AttendanceOutcome.NO_SHOW },
+        }),
+        this.db.siteVisit.count({
+          where: { ...baseWhere, bookingStatus: BookingStatus.CANCELLED },
+        }),
+        this.db.siteVisit.count({
+          where: {
+            ...baseWhere,
+            bookingStatus: { in: [BookingStatus.CONFIRMED, BookingStatus.COMPLETED] },
+            attendanceOutcome: AttendanceOutcome.UNRECORDED,
+            slot: { startsAt: { lte: now } },
+          },
+        }),
+      ]);
+
+    return {
+      totalVisits,
+      confirmedCount,
+      attendedCount,
+      noShowCount,
+      cancelledCount,
+      pendingAttendanceCount,
+    };
+  }
+
+  /**
+   * Staff-initiated cancellation of a site visit with role-based scoping.
+   */
+  async cancelVisitByStaff(
+    visitId: string,
+    staffUser: { id: string; role: UserRole }
+  ): Promise<SiteVisit> {
+    if (staffUser.role === UserRole.SALES_EXEC) {
+      const visit = await this.db.siteVisit.findUnique({
+        where: { id: visitId },
+        include: {
+          lead: {
+            include: {
+              conversations: {
+                include: { handoff: true },
+              },
+            },
+          },
+        },
+      });
+
+      if (!visit) {
+        throw new BookingNotFoundError("Site visit not found");
+      }
+
+      const isAssigned = visit.lead.conversations.some(
+        (c) => c.handoff?.assignedToId === staffUser.id
+      );
+
+      if (!isAssigned) {
+        throw new BookingConflictError(
+          "You are not authorized to cancel a visit for a lead assigned to another executive"
+        );
+      }
+    }
+
+    return this.cancelBooking({ visitId });
+  }
 }
 
+export const bookingService = new BookingService();

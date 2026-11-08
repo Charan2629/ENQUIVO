@@ -5,8 +5,10 @@ import {
   ReminderType,
   ReminderStatus,
   LeadSource,
+  AttendanceOutcome,
 } from "@prisma/client";
 import { ReminderService } from "@/services/reminder/reminder.service";
+import { BookingService } from "@/services/booking/booking.service";
 import { MockNotificationPayload, MockNotificationResult } from "@/services/reminder/mock-notification.provider";
 import { testPrisma, disconnectTestPrisma } from "../helpers/testPrisma";
 
@@ -70,13 +72,17 @@ describe("ReminderService Integration Tests (Isolated Neon Test Branch)", () => 
   async function createTestVisit(
     slotId: string,
     leadId: string,
-    bookingStatus: BookingStatus = BookingStatus.CONFIRMED
+    bookingStatus: BookingStatus = BookingStatus.CONFIRMED,
+    attendanceOutcome: AttendanceOutcome = AttendanceOutcome.UNRECORDED,
+    attendedAt: Date | null = null
   ) {
     const visit = await testPrisma.siteVisit.create({
       data: {
         slotId,
         leadId,
         bookingStatus,
+        attendanceOutcome,
+        attendedAt,
         bookedAt: new Date(),
       },
     });
@@ -405,5 +411,185 @@ describe("ReminderService Integration Tests (Isolated Neon Test Branch)", () => 
     const finalJob = await testPrisma.reminderJob.findUnique({ where: { id: exhaustedJob.id } });
     expect(finalJob?.status).toBe(ReminderStatus.FAILED);
     expect(finalJob?.failureReason).toContain("Worker timeout");
+  });
+
+  it("Scenario 9: suppresses dispatch and purges reminder job when visit is completed as ATTENDED", async () => {
+    let mockDispatched = false;
+    const trackingProvider = async (): Promise<MockNotificationResult> => {
+      mockDispatched = true;
+      return {
+        success: true,
+        messageId: "tracking-attended-id",
+        messageText: "Dispatched",
+        simulationNote: "Should not be called",
+      };
+    };
+
+    const trackingService = new ReminderService(testPrisma, trackingProvider);
+
+    const lead = await createTestLead("Kamal Joshi", 109, false, true);
+    const startsAt = new Date(Date.now() - 2 * 60 * 60 * 1000); // Past start time
+    const slot = await createTestSlot(startsAt, new Date(startsAt.getTime() + 60 * 60 * 1000));
+    // Visit is COMPLETED with ATTENDED outcome
+    const visit = await createTestVisit(
+      slot.id,
+      lead.id,
+      BookingStatus.COMPLETED,
+      AttendanceOutcome.ATTENDED,
+      new Date(Date.now() - 90 * 60 * 1000)
+    );
+
+    const dueTime = new Date(Date.now() - 30 * 60 * 1000);
+    const job = await createTestReminderJob(visit.id, dueTime, ReminderType.REMINDER_2H);
+
+    const result = await trackingService.processReminderJob(job.id);
+
+    expect(result.status).toBe("SKIPPED_VISIT_NOT_CONFIRMED");
+    expect(mockDispatched).toBe(false);
+
+    // Job should be deleted from DB, never dispatched
+    const dbJob = await testPrisma.reminderJob.findUnique({ where: { id: job.id } });
+    expect(dbJob).toBeNull();
+  });
+
+  it("Scenario 10: suppresses dispatch and purges reminder job when visit is marked NO_SHOW", async () => {
+    let mockDispatched = false;
+    const trackingProvider = async (): Promise<MockNotificationResult> => {
+      mockDispatched = true;
+      return {
+        success: true,
+        messageId: "tracking-noshow-id",
+        messageText: "Dispatched",
+        simulationNote: "Should not be called",
+      };
+    };
+
+    const trackingService = new ReminderService(testPrisma, trackingProvider);
+
+    const lead = await createTestLead("Nirav Modi", 110, false, true);
+    const startsAt = new Date(Date.now() - 3 * 60 * 60 * 1000); // Past start time
+    const slot = await createTestSlot(startsAt, new Date(startsAt.getTime() + 60 * 60 * 1000));
+    // Visit is COMPLETED with NO_SHOW outcome
+    const visit = await createTestVisit(
+      slot.id,
+      lead.id,
+      BookingStatus.COMPLETED,
+      AttendanceOutcome.NO_SHOW,
+      null
+    );
+
+    const dueTime = new Date(Date.now() - 45 * 60 * 1000);
+    const job = await createTestReminderJob(visit.id, dueTime, ReminderType.REMINDER_2H);
+
+    const result = await trackingService.processReminderJob(job.id);
+
+    expect(result.status).toBe("SKIPPED_VISIT_NOT_CONFIRMED");
+    expect(mockDispatched).toBe(false);
+
+    // Job should be deleted from DB, never dispatched
+    const dbJob = await testPrisma.reminderJob.findUnique({ where: { id: job.id } });
+    expect(dbJob).toBeNull();
+  });
+
+  it("Scenario 11: BookingService.recordAttendance automatically deletes all pending reminder jobs for the visit", async () => {
+    const bookingService = new BookingService(testPrisma);
+
+    const lead = await createTestLead("Parag Dave", 111, false, true);
+    const startsAt = new Date(Date.now() - 60 * 60 * 1000); // Past start time
+    const slot = await createTestSlot(startsAt, new Date(startsAt.getTime() + 60 * 60 * 1000));
+    const visit = await createTestVisit(slot.id, lead.id, BookingStatus.CONFIRMED);
+
+    // Create a pending reminder job
+    const dueTime = new Date(Date.now() + 60 * 60 * 1000);
+    const job = await createTestReminderJob(visit.id, dueTime, ReminderType.REMINDER_2H);
+
+    // Verify job exists
+    const beforeJob = await testPrisma.reminderJob.findUnique({ where: { id: job.id } });
+    expect(beforeJob).not.toBeNull();
+
+    // Call recordAttendance as ATTENDED
+    await bookingService.recordAttendance({
+      visitId: visit.id,
+      outcome: AttendanceOutcome.ATTENDED,
+    });
+
+    // Verify reminder job was automatically deleted inside the transaction
+    const afterJob = await testPrisma.reminderJob.findUnique({ where: { id: job.id } });
+    expect(afterJob).toBeNull();
+  });
+
+  it("Scenario 12: in-flight PROCESSING reminder job is purged when staff records attendance concurrently", async () => {
+    const bookingService = new BookingService(testPrisma);
+
+    const lead = await createTestLead("Tanmay Baxi", 112, false, true);
+    const startsAt = new Date(Date.now() - 45 * 60 * 1000); // Past start time
+    const slot = await createTestSlot(startsAt, new Date(startsAt.getTime() + 60 * 60 * 1000));
+    const visit = await createTestVisit(slot.id, lead.id, BookingStatus.CONFIRMED);
+
+    // Create an in-flight reminder job in PROCESSING status (claimed by worker)
+    const dueTime = new Date(Date.now() - 5 * 60 * 1000);
+    const job = await createTestReminderJob(
+      visit.id,
+      dueTime,
+      ReminderType.REMINDER_2H,
+      ReminderStatus.PROCESSING,
+      1,
+      new Date()
+    );
+
+    // Staff records attendance concurrently
+    await bookingService.recordAttendance({
+      visitId: visit.id,
+      outcome: AttendanceOutcome.NO_SHOW,
+    });
+
+    // The in-flight PROCESSING job must be purged from database
+    const dbJob = await testPrisma.reminderJob.findUnique({ where: { id: job.id } });
+    expect(dbJob).toBeNull();
+  });
+
+  it("Scenario 13: pre-dispatch atomic guard suppresses dispatch if siteVisit is marked ATTENDED while worker is in-flight", async () => {
+    let mockDispatched = false;
+    const trackingProvider = async (): Promise<MockNotificationResult> => {
+      mockDispatched = true;
+      return {
+        success: true,
+        messageId: "tracking-race-id",
+        messageText: "Dispatched",
+        simulationNote: "Should not be called",
+      };
+    };
+
+    const trackingService = new ReminderService(testPrisma, trackingProvider);
+
+    const lead = await createTestLead("Umesh Trivedi", 113, false, true);
+    const startsAt = new Date(Date.now() - 30 * 60 * 1000);
+    const slot = await createTestSlot(startsAt, new Date(startsAt.getTime() + 60 * 60 * 1000));
+    // Visit starts as CONFIRMED
+    const visit = await createTestVisit(slot.id, lead.id, BookingStatus.CONFIRMED);
+
+    // Job is in PENDING
+    const dueTime = new Date(Date.now() - 5 * 60 * 1000);
+    const job = await createTestReminderJob(visit.id, dueTime, ReminderType.REMINDER_2H);
+
+    // Concurrently, staff marks visit as ATTENDED before dispatch
+    await testPrisma.siteVisit.update({
+      where: { id: visit.id },
+      data: {
+        bookingStatus: BookingStatus.COMPLETED,
+        attendanceOutcome: AttendanceOutcome.ATTENDED,
+        attendedAt: new Date(),
+      },
+    });
+
+    // Worker attempts to process the job
+    const result = await trackingService.processReminderJob(job.id);
+
+    expect(result.status).toBe("SKIPPED_VISIT_NOT_CONFIRMED");
+    expect(mockDispatched).toBe(false);
+
+    // Job deleted from DB
+    const dbJob = await testPrisma.reminderJob.findUnique({ where: { id: job.id } });
+    expect(dbJob).toBeNull();
   });
 });

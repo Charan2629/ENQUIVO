@@ -280,6 +280,114 @@ export interface HandoffDetail {
 }
 
 // ---------------------------------------------------------------------------
+// Fact Sheet Domain Types (M6.4)
+// ---------------------------------------------------------------------------
+import type { FactSheetScope, FactSheetStatus } from "@prisma/client";
+
+export interface FactSheetItem {
+  id: string;
+  key: string;
+  value: string;
+  scope: FactSheetScope;
+  status: FactSheetStatus;
+  isActive: boolean;
+  projectId: string | null;
+  projectName: string | null;
+  createdBy: {
+    id: string;
+    name: string;
+    email: string;
+  };
+  verifiedBy: {
+    id: string;
+    name: string;
+    email: string;
+  } | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface FactSheetMetrics {
+  totalFacts: number;
+  verifiedActive: number;
+  draftCount: number;
+  unverifiedCount: number;
+  inactiveCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// Site Visits & Slot Management Domain Types (M6.4)
+// ---------------------------------------------------------------------------
+import type { VisitSlotStatus, BookingStatus, AttendanceOutcome } from "@prisma/client";
+
+export interface VisitSlotItem {
+  id: string;
+  startsAt: Date;
+  endsAt: Date;
+  startsAtIST: string;
+  endsAtIST: string;
+  status: VisitSlotStatus;
+  location: string;
+  hasConfirmedBooking: boolean;
+  activeBooking?: {
+    visitId: string;
+    leadId: string;
+    leadName: string;
+    leadPhone: string | null;
+    leadCode: string;
+    bookingStatus: BookingStatus;
+  } | null;
+  totalVisitsCount: number;
+}
+
+export interface SiteVisitItem {
+  id: string;
+  slotId: string;
+  leadId: string;
+  bookingStatus: BookingStatus;
+  attendanceOutcome: AttendanceOutcome;
+  bookedAt: Date;
+  cancelledAt: Date | null;
+  attendedAt: Date | null;
+  startsAt: Date;
+  endsAt: Date;
+  startsAtIST: string;
+  endsAtIST: string;
+  location: string;
+  isPast: boolean;
+  isEligibleForAttendance: boolean;
+  lead: {
+    id: string;
+    leadCode: string;
+    name: string;
+    phone: string | null;
+    email: string | null;
+    projectName: string | null;
+  };
+  assignedTo: {
+    id: string;
+    name: string;
+    email: string;
+  } | null;
+}
+
+export interface VisitPagination {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface SiteVisitMetrics {
+  totalVisits: number;
+  confirmedCount: number;
+  attendedCount: number;
+  noShowCount: number;
+  cancelledCount: number;
+  pendingAttendanceCount: number;
+}
+
+// ---------------------------------------------------------------------------
 // Analytics Domain Types
 // ---------------------------------------------------------------------------
 

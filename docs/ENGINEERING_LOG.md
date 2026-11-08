@@ -1066,6 +1066,105 @@ Milestone 6.3 establishes the operations queue for managing AI-escalated and buy
 
 ---
 
+### Milestone 6 Phase 4: Fact Sheet Approval Editor, Slot Manager & Visit Attendance
+
+- **Date:** 2026-11-08 (Verified & Tested)
+- **Milestone & Task:** Milestone 6 Phase 4 — Fact Sheet Governance (`/dashboard/fact-sheet`), Dual-Flag AI Grounding Isolation & Automatic Content Demotion Invariant, Slot Management & Concurrency Guards (`/dashboard/visits`), and Site Visit Attendance Verification with Dynamic Lifecycle Interlock (`VISITED`).
+- **Git Commit Hash:** Pending commit
+
+#### 1. Context & Objectives
+Milestone 6.4 completes the administrative governance workflows required for the ENQUIVO operations portal, ensuring marketing data integrity, physical appointment scheduling, and field sales attribution without mutating the 14-model PostgreSQL schema:
+1. **Fact Sheet Governance (`/dashboard/fact-sheet`):** Provide a real-time portal for Sales Heads to inspect, search, filter, author, edit, approve, and reject property facts across Portfolio and Project scopes (`Prakriti Heights`, `Vaastu Enclave`).
+2. **Dual-Flag AI Grounding Isolation & Content Demotion Invariant (ADR-010, D-031):** Guarantee that the Gemini AI Concierge strictly retrieves facts where `status = 'VERIFIED' AND isActive = true`. If a Sales Head edits the content (`key`, `value`, `scope`, or `projectId`) of an already-verified fact, the system must automatically demote the status to `UNVERIFIED` and clear `verifiedById`, preventing stale claims or unverified updates from leaking into buyer conversations until explicitly re-approved.
+3. **Slot Manager (`/dashboard/visits` sub-tab):** Provide Sales Heads with the ability to create and manage physical visit slots with strict validation (future start times, minimum 15-minute durations, venue specification).
+4. **1-Capacity Slot Reservation Model & Concurrency Protection (ADR-011, D-032):** Align slot management with the database-enforced partial unique index (`one_active_booking_per_slot` where `booking_status = 'CONFIRMED'`). Ensure slots with active confirmed bookings cannot be edited or rescheduled, and slots with historical bookings cannot be deleted.
+5. **Site Visit & Attendance Management (`/dashboard/visits`):** Provide a unified appointment ledger showing buyer identity, slot timings in `Asia/Kolkata` (IST), venue, assigned executive, booking status, and attendance outcome. Allow staff to record attendance outcomes (`ATTENDED` vs `NO_SHOW`) with dynamic lifecycle interlock transitioning the lead to `VISITED`.
+6. **Anti-IDOR Authorization:** Enforce server-side role scoping so Sales Heads retain portfolio-wide visibility and administrative authority, while Sales Executives are strictly restricted to inspecting and managing visits for leads assigned to them.
+
+#### 2. Architecture & Design Decisions
+- **Fact Sheet Approval Policy & Automatic Content Demotion (ADR-010, Decision D-031):**
+  - In `FactSheetService.updateFactSheet`: If a fact is currently `VERIFIED` and any core factual content is modified (`key`, `value`, `scope`, or `projectId`), `status` is automatically reset to `UNVERIFIED` and `verifiedById` is reset to `null`.
+  - In `FactSheetService.verifyFactSheet`: Sales Heads can `VERIFY` (which sets `status = VERIFIED`, `isActive = true`, and stamps `verifiedById = staffUser.id`) or `REJECT` (which sets `status = UNVERIFIED` and deactivates the fact `isActive = false`).
+  - Strict Grounding Isolation: `AIConciergeService.getVerifiedFacts` queries strictly `status: FactSheetStatus.VERIFIED, isActive: true`. Draft, unverified, or rejected facts are physically excluded from LLM prompt construction and tool execution.
+- **1-Capacity Slot Model & Immutability Rules (ADR-011, Decision D-032):**
+  - Rather than treating `VisitSlot` as a multi-capacity bucket, ENQUIVO models each slot as a discrete appointment window. Concurrency is guaranteed at the PostgreSQL engine level via partial unique index `one_active_booking_per_slot` (`WHERE booking_status = 'CONFIRMED'`).
+  - Active Booking Guard: `BookingService.updateSlot` asserts that no `CONFIRMED` visit exists for the slot (`findFirst({ where: { slotId, bookingStatus: 'CONFIRMED' } })`). If booked, the API rejects modifications with `409 Conflict`, requiring staff to cancel or reschedule the visit explicitly.
+  - Historical Record Preservation: `BookingService.deleteSlot` asserts that no `SiteVisit` records exist for the slot in any status (`CONFIRMED`, `COMPLETED`, or `CANCELLED`). If any visit history exists, deletion is blocked with `409 Conflict`, preserving immutable attribution and audit history.
+- **Attendance Verification & Dynamic Lead Lifecycle Interlock:**
+  - `BookingService.recordAttendance(visitId, outcome, notes, staffUser)`:
+    - Enforces temporal validation: attendance can only be marked if the visit has already started (`startsAt <= NOW()`) or was already concluded. Future visits cannot be marked as attended.
+    - Updates `SiteVisit`: sets `attendanceOutcome = outcome`, `attendanceNotes = notes`, `attendedAt = NOW()`, and transitions `bookingStatus = COMPLETED`.
+    - Lead Lifecycle Interlock: When `outcome === 'ATTENDED'`, `LeadService.computeLeadLifecycleStatus` dynamically computes the lead's status as `VISITED` because an attended site visit takes precedence over all prior stages in the customer journey.
+- **Server-Side Anti-IDOR Scoping:**
+  - In `BookingService.getVisits`: For `SALES_HEAD`, returns all visits. For `SALES_EXEC`, restricts the query to `{ lead: { conversations: { some: { handoff: { assignedToId: staffUser.id } } } } }`.
+  - In `BookingService.recordAttendance` and `cancelVisitByStaff`: An executive attempting to mark attendance or cancel an unassigned visit is rejected with `BookingForbiddenError` (HTTP 403).
+
+#### 3. Files Created or Modified
+- `src/lib/validations/fact-sheet.ts` — Authored Zod schemas: `factSheetQuerySchema`, `createFactSheetSchema`, `updateFactSheetSchema`, and `verifyFactSheetSchema`.
+- `src/lib/validations/slot.ts` — Authored Zod schemas: `slotQuerySchema`, `createSlotSchema` (with future start time and minimum 15-minute duration checks), and `updateSlotSchema`.
+- `src/lib/validations/booking.ts` — Added `visitQuerySchema` for site visit listing, timeframe filtering, and attendance status queries.
+- `src/types/index.ts` — Added domain interfaces: `FactSheetItem`, `FactSheetMetrics`, `VisitSlotItem`, `SiteVisitItem`, `VisitPagination`, and `SiteVisitMetrics`.
+- `src/services/fact-sheet/fact-sheet.service.ts` — Implemented `FactSheetService`: CRUD operations, search, scope/status filtering, metrics aggregation, verification/rejection workflows, and the automatic content demotion invariant.
+- `src/services/booking/booking.service.ts` — Augmented `BookingService` with slot management (`createSlot`, `updateSlot`, `deleteSlot`, `getAllSlots`, `getSlotMetrics`), site visit queries with role-based scoping (`getVisits`, `getVisitMetrics`), staff visit cancellation (`cancelVisitByStaff`), and hardened attendance verification (`recordAttendance`) with anti-IDOR enforcement.
+- `src/app/api/fact-sheet/route.ts` — GET (staff listing) and POST (Sales Head fact creation) with CSRF protection.
+- `src/app/api/fact-sheet/metrics/route.ts` — GET endpoint returning total, verified, unverified, draft, and active fact counts.
+- `src/app/api/fact-sheet/[id]/route.ts` — PATCH (Sales Head updates with demotion invariant) and DELETE (Sales Head deletion).
+- `src/app/api/fact-sheet/[id]/verify/route.ts` — POST endpoint for Sales Head fact approval (`VERIFY`) and rejection (`REJECT`).
+- `src/app/api/slots/route.ts` — GET (staff slot listing) and POST (Sales Head slot creation).
+- `src/app/api/slots/metrics/route.ts` — GET endpoint returning total, available, booked, and past slot counts.
+- `src/app/api/slots/[id]/route.ts` — PATCH (slot timing/venue updates with active booking guard) and DELETE (slot deletion with historical visit guard).
+- `src/app/api/visits/route.ts` — GET endpoint returning role-scoped site visits with pagination and filters.
+- `src/app/api/visits/metrics/route.ts` — GET endpoint returning role-scoped visit metrics (total, confirmed, attended, no-show, cancelled).
+- `src/app/api/visits/[id]/attendance/route.ts` — POST endpoint for recording visit attendance (`ATTENDED` vs `NO_SHOW`) with anti-IDOR checks.
+- `src/app/api/visits/[id]/cancel/route.ts` — POST endpoint for staff visit cancellation with automatic slot release and reminder cancellation.
+- `src/components/portal/fact-sheet/fact-sheet-modal.tsx` — Modal for creating and editing facts with live demotion warning banner.
+- `src/components/portal/fact-sheet/fact-sheet-client.tsx` — Full-featured fact sheet governance client with metric summary cards, keyword search, scope/status/active filters, verification modals, and responsive table.
+- `src/app/(portal)/dashboard/fact-sheet/page.tsx` — Protected server component mounting fact sheet governance with `requireSalesHead` RBAC guard.
+- `src/components/portal/visits/create-slot-modal.tsx` — Modal for creating site visit slots with IST datetime pickers and venue input.
+- `src/components/portal/visits/edit-slot-modal.tsx` — Modal for editing slot timing and venue.
+- `src/components/portal/visits/record-attendance-modal.tsx` — Modal for recording attendance outcome (`ATTENDED` vs `NO_SHOW`) with notes.
+- `src/components/portal/visits/visits-manager-client.tsx` — Unified client interface featuring tabs for "Visits & Attendance" and "Slot Manager", role-aware actions, and metric cards.
+- `src/app/(portal)/dashboard/visits/page.tsx` — Protected server component mounting the visit and slot management interface with `requireStaffSession`.
+- `tests/unit/fact-sheet.test.ts` — 19 unit tests covering Zod schemas, validation edge cases, and `FactSheetService` domain logic.
+- `tests/unit/slot-management.test.ts` — 15 unit tests covering slot creation/update schemas, temporal constraints, and error handling.
+- `tests/unit/visit-attendance.test.ts` — 11 unit tests covering visit query validation, attendance outcome schemas, and role scoping logic.
+- `tests/integration/fact-sheet.test.ts` — 9 integration tests against isolated Neon test branch verifying creation, auto-demotion on edit, approval/rejection, RBAC rejections, and strict AI retrieval isolation.
+- `tests/integration/visit-attendance.test.ts` — 9 integration tests against isolated Neon test branch verifying slot creation, modification guards on booked slots, deletion guards on historical visits, attendance recording, dynamic `VISITED` lifecycle status transition, and anti-IDOR scoping for `SALES_EXEC`.
+- `docs/ARCHITECTURE_DECISIONS.md` — Added ADR-010 (Fact Sheet Approval & Content Demotion Invariant) and ADR-011 (Slot Capacity Model & Attendance Management).
+- `docs/TDD_DRAFT.md` — Updated Section 8, Section 10, Decision Log (D-031, D-032), and Milestone Tracker.
+- `docs/PROJECT_STATE.md` — Updated operational state, test counts (191 unit, 98 integration), and next actions.
+- `deployment.md` — Updated test counts and documented fact sheet and visit management endpoints.
+
+#### 4. Verification Performed & Results
+- `npm test` — ✅ PASS (191/191 unit tests passed across 12 files in 6.13s, including 47 new unit tests across `fact-sheet.test.ts`, `slot-management.test.ts`, and `visit-attendance.test.ts`).
+- `npm run test:integration` — ✅ PASS (98/98 integration tests passed across 11 files against Neon test branch `ep-mute-butterfly-b3a54tpa` in 162.61s, including 23 new integration tests across `fact-sheet.test.ts`, `visit-attendance.test.ts`, and `reminder-service.test.ts`).
+- `npx tsc --noEmit` — ✅ PASS (0 errors across entire workspace).
+- `npm run lint` — ✅ PASS (0 errors, 0 warnings across all files).
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 31 static & dynamic routes compiled).
+- `git diff --check` — ✅ PASS (0 trailing whitespace or formatting errors).
+
+#### 5. Division of Responsibility & AI Collaboration
+- **Developer Contribution:** Mandated zero schema migrations; formulated the automatic content demotion invariant to prevent AI hallucinations from stale fact sheet edits; mandated the 1-capacity slot reservation model backed by the PostgreSQL partial unique index; prohibited modifying booked slots or deleting slots with booking history; mandated server-side anti-IDOR scoping for visit inspection and attendance recording; and reviewed code and tests.
+- **AI Assistance:** Authored validation schemas, implemented `FactSheetService` and augmented `BookingService`, built 10 REST API routes with CSRF and RBAC protection, developed interactive client components (`FactSheetClient`, `VisitsManagerClient`, modals), authored 45 unit tests and 18 integration tests against the isolated Neon test branch, resolved Next.js 16 build segment configuration and React 19 hook linting, and synchronized project documentation.
+
+#### 6. Interview Preparation & Deep-Dive
+- **Code Walkthrough:**
+  - `src/services/fact-sheet/fact-sheet.service.ts`: `updateFactSheet` inspects whether core content fields (`key`, `value`, `scope`, `projectId`) have changed on an already-verified fact. If so, it resets `status = FactSheetStatus.UNVERIFIED` and `verifiedById = null`. `verifyFactSheet` updates status to `VERIFIED` or `UNVERIFIED` (with deactivation), stamping the verifier's user ID.
+  - `src/services/booking/booking.service.ts`: `updateSlot` checks `siteVisits.findFirst({ where: { slotId, bookingStatus: 'CONFIRMED' } })` before allowing timing or venue changes, throwing `SlotConflictError` if an active booking exists. `deleteSlot` checks for any `siteVisits` in any status, throwing `SlotConflictError` to preserve auditability. `recordAttendance` verifies `startsAt <= new Date()`, updates `attendanceOutcome = outcome`, sets `bookingStatus = COMPLETED`, and marks `attendedAt = NOW()`.
+  - `src/app/api/visits/[id]/attendance/route.ts`: Enforces CSRF verification, loads the authenticated staff user, checks role permissions (if `SALES_EXEC`, asserts that the visit's lead is assigned to them via an active conversation handoff), and delegates to `bookingService.recordAttendance`.
+- **Trade-off Defense (Automatic Content Demotion vs. Explicit Revocation):**
+  - *Explicit Revocation:* Requiring an admin to manually mark a fact unverified before editing relies on human discipline. In high-pressure sales environments, a staff member editing a price or carpet area might forget to revoke verification, immediately causing the AI Concierge to quote the unvetted figure to live buyers.
+  - *Automatic Content Demotion (Our Choice):* By enforcing the demotion invariant directly inside `FactSheetService.updateFactSheet`, any modification to factual data automatically revokes verification and verifier stamping at the service layer. The AI grounding query (`status = 'VERIFIED' AND isActive = true`) instantly stops retrieving the updated fact until a Sales Head reviews and explicitly approves it via the verification workflow.
+- **Failure Mode Defense (What breaks if we remove our guardrails?):**
+  - *Removing Slot Modification Guards:* If staff could edit slot start times for already-booked slots, the scheduled Inngest reminder jobs (calculated relative to the original start time) would fire at incorrect intervals, and buyers who received confirmation emails or SMS would arrive at the property hours before or after the salesperson.
+  - *Removing Anti-IDOR Scoping on Visit Attendance:* If `recordAttendance` only checked that the user was an authenticated staff member, a rogue Sales Executive could mark attendance on high-value leads belonging to rival executives, falsely claiming sales credit or corrupting attribution metrics.
+- **Likely Interview Question 1:** *How do you ensure that changes to the Fact Sheet don't cause the AI Concierge to hallucinate or make unauthorized commitments to prospective buyers?*
+  - **Technical Answer:** *We implement a two-stage defense: service-level automatic demotion and dual-flag query isolation. In `FactSheetService.updateFactSheet`, whenever an existing fact's content is modified, the service atomically resets `status` to `UNVERIFIED` and clears `verifiedById`. At the query boundary, `AIConciergeService.getVerifiedFacts` strictly queries `where: { status: 'VERIFIED', isActive: true }`. Because unverified and draft facts are physically excluded from the LLM's prompt and tool retrieval, newly edited facts cannot influence AI responses until a Sales Head reviews and explicitly approves them.*
+- **Likely Interview Question 2:** *Why do you prohibit deleting a slot that has cancelled bookings, rather than just cascading the deletion?*
+  - **Technical Answer:** *Data integrity and marketing attribution. In residential real estate, understanding lead drop-off and slot demand requires analyzing cancelled appointments alongside completed ones. If deleting a slot cascaded or orphaned `SiteVisit` records, we would destroy historical touchpoint data used to calculate conversion rates, lead source efficacy, and buyer engagement history. By blocking slot deletion when any visit history exists (`count > 0`), we preserve an immutable audit trail for marketing analytics.*
+
+---
+
 ## Unverified Historical Information Register
 
 In accordance with strict verification rules, the following details cannot be independently verified from the repository git log and are explicitly recorded as unverified assumptions:

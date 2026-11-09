@@ -1,12 +1,13 @@
 import { prisma } from "@/lib/prisma";
 import { FactSheetScope, FactSheetStatus } from "@prisma/client";
 import { PublicNav } from "@/components/buyer/public-nav";
-import { HeroSection } from "@/components/buyer/hero-section";
+import { CinematicHero } from "@/components/buyer/cinematic-hero";
 import { ProjectShowcase } from "@/components/buyer/project-showcase";
 import { ArchitecturalScene3D } from "@/components/buyer/architectural-scene-3d";
 import { WhyChooseUs } from "@/components/buyer/why-choose-us";
 import { ConciergeCtaSection } from "@/components/buyer/concierge-cta-section";
 import { PublicFooter } from "@/components/buyer/public-footer";
+import { HomeScrollReveals } from "@/components/buyer/home-scroll-reveals";
 import { Compass } from "lucide-react";
 
 export const instant = false;
@@ -53,18 +54,18 @@ export default async function HomePage() {
   const priceRangeFact = factsMap["price_range"] || "₹65 lakh to ₹1.2 crore";
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#F7F8F4] text-[#102F43] font-sans selection:bg-[#13A99A]/20 selection:text-[#102F43]">
+    <div className="min-h-screen flex flex-col bg-[#F7F8F4] text-[#102F43] font-sans selection:bg-[#13A99A]/20 selection:text-[#102F43] overflow-x-hidden">
       <PublicNav />
       <main className="flex-1">
-        <HeroSection
+        <CinematicHero
           totalApartments={totalApartmentsCount}
           priceRange="₹65L – ₹1.2Cr"
         />
 
         {/* Signature 3D Architectural Scene Section */}
-        <section id="architecture" className="py-20 sm:py-28 bg-white border-b border-[#102F43]/10">
+        <section id="architecture" className="py-20 sm:py-28 bg-[#F7F8F4] border-b border-[#102F43]/10">
           <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-            <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-6 pb-10 border-b border-[#102F43]/10">
+            <div data-reveal-header className="flex flex-col md:flex-row md:items-end md:justify-between gap-6 pb-10 border-b border-[#102F43]/10">
               <div>
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#E7F4F4] text-[#13A99A] text-xs font-semibold uppercase tracking-wider mb-2">
                   <Compass className="w-3.5 h-3.5" />
@@ -79,7 +80,7 @@ export default async function HomePage() {
               </p>
             </div>
 
-            <div className="mt-10">
+            <div data-reveal-content className="mt-10">
               <ArchitecturalScene3D />
             </div>
           </div>
@@ -92,6 +93,7 @@ export default async function HomePage() {
         />
         <WhyChooseUs />
         <ConciergeCtaSection />
+        <HomeScrollReveals />
       </main>
       <PublicFooter />
     </div>

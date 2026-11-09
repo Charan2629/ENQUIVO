@@ -25,7 +25,10 @@
   --color-bluegreen-dark: #183442;
 }
 
+html,
 body {
+  overflow-x: hidden;
+  max-width: 100vw;
   background: var(--background);
   color: var(--foreground);
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";

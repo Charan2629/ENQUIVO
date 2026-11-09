@@ -84,6 +84,12 @@ export function ProjectShowcase({
         {/* Project Cards Grid */}
         <div className="mt-12 grid grid-cols-1 gap-10 lg:grid-cols-2">
           {projects.map((project) => {
+            const projectAnchorId = project.name.toLowerCase().includes("prakriti")
+              ? "prakriti-heights"
+              : project.name.toLowerCase().includes("vaastu")
+              ? "vaastu-enclave"
+              : project.name.toLowerCase().replace(/\s+/g, "-");
+
             const meta = projectMeta[project.name] || {
               corridor: project.location,
               tagline: "Contemporary Residential Development",
@@ -101,7 +107,9 @@ export function ProjectShowcase({
             return (
               <article
                 key={project.id}
-                className="group flex flex-col overflow-hidden rounded-3xl border border-[#102F43]/10 bg-white shadow-sm transition-all hover:border-[#13A99A]/50 hover:shadow-xl"
+                id={projectAnchorId}
+                data-testid={`project-card-${projectAnchorId}`}
+                className="group flex flex-col overflow-hidden rounded-3xl border border-[#102F43]/10 bg-white shadow-sm transition-all hover:border-[#13A99A]/50 hover:shadow-xl scroll-mt-28"
               >
                 {/* Architectural Presentation Header */}
                 <div

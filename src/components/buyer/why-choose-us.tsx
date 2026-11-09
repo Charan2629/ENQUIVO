@@ -53,6 +53,7 @@ export function WhyChooseUs() {
             return (
               <div
                 key={idx}
+                data-standard-card
                 className="p-6 rounded-3xl bg-white border border-[#102F43]/10 shadow-xs hover:shadow-lg transition-all hover:border-[#13A99A]/40 flex flex-col justify-between"
               >
                 <div>

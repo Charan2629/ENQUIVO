@@ -43,7 +43,7 @@ export function ArchitecturalScene3D() {
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap;
 
     // Master Group
     const cityGroup = new THREE.Group();
@@ -266,11 +266,12 @@ export function ArchitecturalScene3D() {
 
     // Animation Loop
     let animId: number;
-    const clock = new THREE.Clock();
+    const timer = new THREE.Timer();
 
-    const animate = () => {
+    const animate = (timestamp: number) => {
       animId = requestAnimationFrame(animate);
-      const delta = clock.getDelta();
+      timer.update(timestamp);
+      const delta = timer.getDelta();
 
       if (!prefersReducedMotion) {
         // Slow subtle auto-rotation + damped mouse tracking
@@ -287,10 +288,11 @@ export function ArchitecturalScene3D() {
       renderer.render(scene, camera);
     };
 
-    animate();
+    animId = requestAnimationFrame(animate);
 
     return () => {
       cancelAnimationFrame(animId);
+      timer.dispose();
       window.removeEventListener("resize", handleResize);
       container.removeEventListener("mousemove", handleMouseMove);
       container.removeEventListener("mouseleave", handleMouseLeave);

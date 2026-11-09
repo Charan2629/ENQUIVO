@@ -32,11 +32,15 @@ import { EditSlotModal } from "./edit-slot-modal";
 interface VisitsManagerClientProps {
   userRole: UserRole;
   initialVisitMetrics: SiteVisitMetrics;
+  initialVisits?: SiteVisitItem[];
+  initialPagination?: VisitPagination;
 }
 
 export function VisitsManagerClient({
   userRole,
   initialVisitMetrics,
+  initialVisits,
+  initialPagination,
 }: VisitsManagerClientProps) {
   // Main Tab: "visits" | "slots"
   const [activeTab, setActiveTab] = useState<"visits" | "slots">("visits");
@@ -52,16 +56,23 @@ export function VisitsManagerClient({
   const [visitPage, setVisitPage] = useState<number>(1);
   const [visitLimit] = useState<number>(20);
 
-  const [visits, setVisits] = useState<SiteVisitItem[]>([]);
-  const [visitPagination, setVisitPagination] = useState<VisitPagination>({
-    total: 0,
-    page: 1,
-    limit: 20,
-    totalPages: 1,
-  });
+  // Data & State (initialized with SSR data if provided)
+  const [visits, setVisits] = useState<SiteVisitItem[]>(initialVisits || []);
+  const [visitPagination, setVisitPagination] = useState<VisitPagination>(
+    initialPagination || {
+      total: initialVisits ? initialVisits.length : 0,
+      page: 1,
+      limit: 20,
+      totalPages: 1,
+    }
+  );
   const [visitMetrics, setVisitMetrics] = useState<SiteVisitMetrics>(initialVisitMetrics);
-  const [isVisitsLoading, setIsVisitsLoading] = useState(true);
+  const [isVisitsLoading, setIsVisitsLoading] = useState(!initialVisits);
   const [visitsError, setVisitsError] = useState<string | null>(null);
+
+  // Track initial mount to prevent duplicate client-side fetch when SSR data is available
+  const isInitialMount = React.useRef(true);
+  const initialVisitsRef = React.useRef(initialVisits);
 
   // -------------------------------------------------------------------------
   // Slots Tab State
@@ -103,6 +114,14 @@ export function VisitsManagerClient({
   // -------------------------------------------------------------------------
   useEffect(() => {
     if (activeTab !== "visits") return;
+
+    // If SSR visits data was provided, bypass duplicate initial mount fetch
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      if (initialVisitsRef.current) {
+        return;
+      }
+    }
 
     let cancelled = false;
 

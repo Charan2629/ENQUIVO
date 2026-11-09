@@ -36,12 +36,16 @@ interface LeadPipelineClientProps {
   userRole: UserRole;
   userName: string;
   projects: ProjectOption[];
+  initialLeads?: LeadListItem[];
+  initialPagination?: LeadPagination;
 }
 
 export function LeadPipelineClient({
   userRole,
   userName,
   projects,
+  initialLeads,
+  initialPagination,
 }: LeadPipelineClientProps) {
   // Filters & Query State
   const [search, setSearch] = useState("");
@@ -54,17 +58,23 @@ export function LeadPipelineClient({
   const [page, setPage] = useState<number>(1);
   const [limit, setLimit] = useState<number>(10);
 
-  // Data & State
-  const [leads, setLeads] = useState<LeadListItem[]>([]);
-  const [pagination, setPagination] = useState<LeadPagination>({
-    total: 0,
-    page: 1,
-    limit: 10,
-    totalPages: 1,
-  });
-  const [isLoading, setIsLoading] = useState(true);
+  // Data & State (initialized with SSR data if provided)
+  const [leads, setLeads] = useState<LeadListItem[]>(initialLeads || []);
+  const [pagination, setPagination] = useState<LeadPagination>(
+    initialPagination || {
+      total: initialLeads ? initialLeads.length : 0,
+      page: 1,
+      limit: 10,
+      totalPages: 1,
+    }
+  );
+  const [isLoading, setIsLoading] = useState(!initialLeads);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Track initial mount to prevent duplicate client-side fetch when SSR data is available
+  const isInitialMount = React.useRef(true);
+  const initialLeadsRef = React.useRef(initialLeads);
 
   // Modal State
   const [isIngestModalOpen, setIsIngestModalOpen] = useState(false);
@@ -80,6 +90,14 @@ export function LeadPipelineClient({
 
   // Synchronize leads from API
   useEffect(() => {
+    // If SSR data was provided, bypass duplicate initial mount fetch
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      if (initialLeadsRef.current) {
+        return;
+      }
+    }
+
     let cancelled = false;
 
     async function load() {

@@ -1,5 +1,7 @@
 import { cookies } from "next/headers";
 import { connection } from "next/server";
+import { cache } from "react";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { UserRole } from "@prisma/client";
 import {
   staffAuthService,
@@ -8,6 +10,38 @@ import {
   StaffSessionForbiddenError,
   StaffSessionInvalidError,
 } from "@/services/auth/staff-auth.service";
+
+/**
+ * Request-scoped session verification cache for React Server Component renders.
+ * Uses React.cache() to deduplicate database lookups within a single React Server Component
+ * render tree (e.g. PortalLayout and nested DashboardPage).
+ */
+const getStaffSessionCached = cache(
+  async (token: string): Promise<ValidatedStaffSession | null> => {
+    try {
+      return await staffAuthService.verifySessionAndFetchUser(token);
+    } catch {
+      return null;
+    }
+  }
+);
+
+interface RequestSessionStore {
+  sessions: Map<string, Promise<ValidatedStaffSession | null>>;
+}
+
+const requestSessionStorage = new AsyncLocalStorage<RequestSessionStore>();
+
+/**
+ * Runs an asynchronous function within an isolated request-scoped session cache.
+ * Guarantees that multiple getStaffSession() calls within this scope reuse the
+ * same validated session, while calls outside or across separate scopes re-evaluate
+ * live against the database.
+ */
+export function runWithRequestSessionScope<T>(callback: () => Promise<T>): Promise<T> {
+  const store: RequestSessionStore = { sessions: new Map() };
+  return requestSessionStorage.run(store, callback);
+}
 
 /**
  * Extracts the staff session token from either an explicit Request or Next.js cookies().
@@ -33,6 +67,7 @@ export async function getStaffSessionToken(req?: Request): Promise<string | unde
 
 /**
  * Retrieves and cryptographically validates the staff session, revalidating the user against PostgreSQL.
+ * Deduplicated within the same request lifecycle via React.cache() (SSR) and AsyncLocalStorage (test/explicit scopes).
  * Returns null if missing or invalid.
  */
 export async function getStaffSession(req?: Request): Promise<ValidatedStaffSession | null> {
@@ -47,11 +82,19 @@ export async function getStaffSession(req?: Request): Promise<ValidatedStaffSess
   const token = await getStaffSessionToken(req);
   if (!token) return null;
 
-  try {
-    return await staffAuthService.verifySessionAndFetchUser(token);
-  } catch {
-    return null;
+  // 1. Explicit request scope (e.g. test runner or custom request boundary)
+  const store = requestSessionStorage.getStore();
+  if (store) {
+    let pending = store.sessions.get(token);
+    if (!pending) {
+      pending = staffAuthService.verifySessionAndFetchUser(token).catch(() => null);
+      store.sessions.set(token, pending);
+    }
+    return pending;
   }
+
+  // 2. Next.js React Server Component request-scoped cache
+  return getStaffSessionCached(token);
 }
 
 /**

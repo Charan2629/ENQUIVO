@@ -169,13 +169,34 @@ export function classifyGeminiError(error: unknown): AIError {
 // Gemini Client Interface & Types
 // ============================================================================
 export interface GeminiToolCall {
+  id?: string;
   name: string;
   args: Record<string, unknown>;
+}
+
+export interface GeminiContentPart {
+  text?: string;
+  functionCall?: {
+    id?: string;
+    name: string;
+    args: Record<string, unknown>;
+  };
+  functionResponse?: {
+    id?: string;
+    name: string;
+    response: Record<string, unknown>;
+  };
+}
+
+export interface GeminiConversationContent {
+  role: "user" | "model";
+  parts: GeminiContentPart[];
 }
 
 export interface GeminiTurnResult {
   text?: string;
   toolCalls?: GeminiToolCall[];
+  rawParts?: GeminiContentPart[];
 }
 
 export interface GeminiClientInterface {
@@ -183,6 +204,12 @@ export interface GeminiClientInterface {
     systemInstruction: string;
     history: Array<{ role: "user" | "model"; text: string }>;
     userMessage: string;
+    tools: unknown[];
+  }): Promise<GeminiTurnResult>;
+
+  continueTurn?(params: {
+    systemInstruction: string;
+    contents: GeminiConversationContent[];
     tools: unknown[];
   }): Promise<GeminiTurnResult>;
 }
@@ -259,32 +286,79 @@ export function getGeminiModelName(): string {
  * Prevents nested retry loops by relying on the client's HTTP retry policy.
  */
 export const createDefaultGeminiClient = (): GeminiClientInterface => {
-  return {
-    async generate({ systemInstruction, history, userMessage, tools }) {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey || apiKey === "your-google-gemini-api-key") {
-        throw new AIAuthError(
-          "GEMINI_API_KEY is not configured in .env.local. Configure a valid Google Gemini API key to run live AI generations."
-        );
-      }
+  const getAiInstance = async () => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey === "your-google-gemini-api-key") {
+      throw new AIAuthError(
+        "GEMINI_API_KEY is not configured in .env.local. Configure a valid Google Gemini API key to run live AI generations."
+      );
+    }
 
-      const { GoogleGenAI } = await import("@google/genai");
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          timeout: 30000,
-          retryOptions: {
-            attempts: 3, // Initial request + up to 2 bounded retries
-            initialDelay: 1.0, // 1s initial delay
-            maxDelay: 4.0, // 4s maximum delay cap
-            expBase: 2.0, // Exponential backoff multiplier
-            jitter: 0.5, // 50% randomized jitter
-            httpStatusCodes: [429, 503, 504], // Retry on transient rate limits & service overload
-          },
+    const { GoogleGenAI } = await import("@google/genai");
+    return new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        timeout: 30000,
+        retryOptions: {
+          attempts: 3, // Initial request + up to 2 bounded retries
+          initialDelay: 1.0, // 1s initial delay
+          maxDelay: 4.0, // 4s maximum delay cap
+          expBase: 2.0, // Exponential backoff multiplier
+          jitter: 0.5, // 50% randomized jitter
+          httpStatusCodes: [429, 503, 504], // Retry on transient rate limits & service overload
+        },
+      },
+    });
+  };
+
+  const executeGenerate = async (
+    systemInstruction: string,
+    contents: GeminiConversationContent[],
+    tools: unknown[]
+  ): Promise<GeminiTurnResult> => {
+    const ai = await getAiInstance();
+    const model = getGeminiModelName();
+
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: contents as unknown as Parameters<typeof ai.models.generateContent>[0]["contents"],
+        config: {
+          systemInstruction,
+          tools: [{ functionDeclarations: tools as unknown as Record<string, unknown>[] }],
         },
       });
 
-      const contents = [
+      const candidate = response.candidates?.[0];
+      const parts = candidate?.content?.parts as GeminiContentPart[] | undefined;
+      const text = parts?.find((p) => p.text)?.text;
+      const functionCalls = parts
+        ?.filter(
+          (
+            p
+          ): p is GeminiContentPart & {
+            functionCall: { id?: string; name: string; args: Record<string, unknown> };
+          } => Boolean(p.functionCall)
+        )
+        ?.map((p) => ({
+          id: p.functionCall.id,
+          name: p.functionCall.name,
+          args: p.functionCall.args || {},
+        }));
+
+      return {
+        text,
+        toolCalls: functionCalls && functionCalls.length > 0 ? functionCalls : undefined,
+        rawParts: parts,
+      };
+    } catch (rawError) {
+      throw classifyGeminiError(rawError);
+    }
+  };
+
+  return {
+    async generate({ systemInstruction, history, userMessage, tools }) {
+      const contents: GeminiConversationContent[] = [
         ...history.map((h) => ({
           role: h.role,
           parts: [{ text: h.text }],
@@ -294,50 +368,11 @@ export const createDefaultGeminiClient = (): GeminiClientInterface => {
           parts: [{ text: userMessage }],
         },
       ];
+      return executeGenerate(systemInstruction, contents, tools);
+    },
 
-      interface ContentPart {
-        text?: string;
-        functionCall?: {
-          name: string;
-          args: Record<string, unknown>;
-        };
-      }
-
-      const model = getGeminiModelName();
-
-      try {
-        const response = await ai.models.generateContent({
-          model,
-          contents,
-          config: {
-            systemInstruction,
-            tools: [{ functionDeclarations: tools as unknown as Record<string, unknown>[] }],
-          },
-        });
-
-        const candidate = response.candidates?.[0];
-        const parts = candidate?.content?.parts as ContentPart[] | undefined;
-        const text = parts?.find((p) => p.text)?.text;
-        const functionCalls = parts
-          ?.filter(
-            (
-              p
-            ): p is ContentPart & {
-              functionCall: { name: string; args: Record<string, unknown> };
-            } => Boolean(p.functionCall)
-          )
-          ?.map((p) => ({
-            name: p.functionCall.name,
-            args: p.functionCall.args || {},
-          }));
-
-        return {
-          text,
-          toolCalls: functionCalls && functionCalls.length > 0 ? functionCalls : undefined,
-        };
-      } catch (rawError) {
-        throw classifyGeminiError(rawError);
-      }
+    async continueTurn({ systemInstruction, contents, tools }) {
+      return executeGenerate(systemInstruction, contents, tools);
     },
   };
 };
@@ -423,6 +458,40 @@ export class AIConciergeService {
   }
 
   /**
+   * Formats a deterministic, high-quality factual response grounded strictly in verified FactSheet records.
+   * Invoked when Gemini requests getVerifiedFacts and subsequent generation is empty, rate-limited, or unavailable.
+   * Guarantees 0% hallucinations, strict compliance notice inclusion, and authentic trilingual localization.
+   */
+  formatDeterministicFactResponse(
+    facts: Array<{ key: string; value: string; scope: FactSheetScope; projectId?: string | null }>,
+    language: ConversationLanguage
+  ): string {
+    const reraDisclaimer =
+      "RERA Reg: DEMO-ONLY-NOT-VERIFIED (All project details are for demonstration purposes only).";
+
+    if (facts.length === 0) {
+      return this.localizeText(
+        language,
+        `Thank you for your inquiry. We currently do not have active verified specifications matching your exact request. Would you like me to connect you with our sales executive?\n\n${reraDisclaimer}`,
+        `आपकी पूछताछ के लिए धन्यवाद। वर्तमान में हमारे पास आपके सटीक अनुरोध से मेल खाने वाले सक्रिय सत्यापित विवरण उपलब्ध नहीं हैं। क्या आप चाहेंगे कि मैं आपको हमारे बिक्री कार्यकारी से जोड़ूँ?\n\n${reraDisclaimer}`,
+        `તમારી પૂછપરછ બદલ આભાર. હાલમાં અમારી પાસે તમારી ચોક્કસ વિનંતી મુજબની સક્રિય ચકાસાયેલ વિગતો ઉપલબ્ધ નથી. શું તમે ઈચ્છો છો કે હું તમને અમારા સેલ્સ એક્ઝિક્યુટિવ સાથે જોડું?\n\n${reraDisclaimer}`
+      );
+    }
+
+    const bulletPoints = facts.map((f) => `• ${f.value}`).join("\n");
+
+    if (language === ConversationLanguage.HI) {
+      return `अहमदाबाद में हमारे लक्जरी आवासीय प्रोजेक्ट्स के सत्यापित विवरण निम्नलिखित हैं:\n\n${bulletPoints}\n\n${reraDisclaimer}\n\nक्या आप साइट विज़िट के लिए उपलब्ध समय देखना चाहेंगे या बिक्री टीम से जुड़ना चाहेंगे?`;
+    }
+
+    if (language === ConversationLanguage.GU) {
+      return `અમદાવાદમાં અમારા લક્ઝરી રેસિડેન્શિયલ પ્રોજેક્ટ્સની ચકાસાયેલ વિગતો નીચે મુજબ છે:\n\n${bulletPoints}\n\n${reraDisclaimer}\n\nશું તમે સાઇટ મુલાકાત માટે ઉપલબ્ધ સ્લોટ જોવા માંગો છો કે સેલ્સ ટીમ સાથે વાત કરવા માંગો છો?`;
+    }
+
+    return `Here are the verified details for our luxury residential developments in Ahmedabad:\n\n${bulletPoints}\n\n${reraDisclaimer}\n\nWould you like me to check upcoming available slots for your site visit, or connect you with our sales executive?`;
+  }
+
+  /**
    * Processes a turn in the conversation:
    * 1. Validates conversation and lead relationship.
    * 2. Persists the user message first (guaranteeing no data loss on AI error).
@@ -456,6 +525,15 @@ export class AIConciergeService {
       throw new AISecurityError(
         `Security violation: Conversation ${validated.conversationId} does not belong to lead ${validated.leadId}`
       );
+    }
+
+    // Update conversation language if requested and different from DB
+    if (validated.language && conversation.language !== validated.language) {
+      await this.db.conversation.update({
+        where: { id: conversation.id },
+        data: { language: validated.language },
+      });
+      conversation.language = validated.language;
     }
 
     const lead = conversation.lead;
@@ -554,23 +632,68 @@ export class AIConciergeService {
 
     // Track fact sheet IDs retrieved during this turn
     const turnGroundingFactIds = new Set<string>();
+    let lastRetrievedFacts: Array<{
+      id: string;
+      key: string;
+      value: string;
+      scope: FactSheetScope;
+      projectId: string | null;
+    }> = [];
 
     let finalAiText = "";
     let handoffCreated = false;
     let handoffRecord: Awaited<ReturnType<typeof this.db.handoff.create>> | null = null;
 
-    // 4. Call Gemini client
-    try {
-      const turnResult = await this.geminiClient.generate({
-        systemInstruction,
-        history,
-        userMessage: validated.message,
-        tools: aiToolDeclarations,
-      });
+    // 4. Call Gemini client with multi-turn tool calling support (bounded by MAX_TOOL_ROUNDS = 3)
+    const MAX_TOOL_ROUNDS = 3;
+    const conversationContents: GeminiConversationContent[] = [
+      ...history.map((h) => ({
+        role: h.role,
+        parts: [{ text: h.text }],
+      })),
+      {
+        role: "user",
+        parts: [{ text: validated.message }],
+      },
+    ];
 
-      // Handle server-side tool calls if invoked by model
-      if (turnResult.toolCalls && turnResult.toolCalls.length > 0) {
-        for (const toolCall of turnResult.toolCalls) {
+    try {
+      let round = 0;
+      while (round < MAX_TOOL_ROUNDS) {
+        round++;
+
+        let turnResult: GeminiTurnResult;
+        if (round === 1) {
+          turnResult = await this.geminiClient.generate({
+            systemInstruction,
+            history,
+            userMessage: validated.message,
+            tools: aiToolDeclarations,
+          });
+        } else {
+          if (!this.geminiClient.continueTurn) {
+            break;
+          }
+          turnResult = await this.geminiClient.continueTurn({
+            systemInstruction,
+            contents: conversationContents,
+            tools: aiToolDeclarations,
+          });
+        }
+
+        if (turnResult.text) {
+          finalAiText = turnResult.text;
+        }
+
+        const toolCalls = turnResult.toolCalls;
+        if (!toolCalls || toolCalls.length === 0) {
+          break;
+        }
+
+        const functionResponseParts: GeminiContentPart[] = [];
+        let shouldStopEarly = false;
+
+        for (const toolCall of toolCalls) {
           if (toolCall.name === "getVerifiedFacts") {
             const toolInput = getVerifiedFactsToolSchema.parse(toolCall.args);
             const facts = await this.getVerifiedFacts({
@@ -581,6 +704,22 @@ export class AIConciergeService {
             for (const f of facts) {
               turnGroundingFactIds.add(f.id);
             }
+            lastRetrievedFacts = facts;
+
+            functionResponseParts.push({
+              functionResponse: {
+                id: toolCall.id,
+                name: "getVerifiedFacts",
+                response: {
+                  facts: facts.map((f) => ({
+                    id: f.id,
+                    scope: f.scope,
+                    key: f.key,
+                    value: f.value,
+                  })),
+                },
+              },
+            });
           } else if (toolCall.name === "checkSlotAvailability") {
             const toolInput = checkSlotAvailabilityToolSchema.parse(toolCall.args);
             const slots = await this.bookingService.getAvailableSlots({
@@ -588,15 +727,21 @@ export class AIConciergeService {
               to: toolInput.endDate ? new Date(toolInput.endDate) : undefined,
             });
 
-            // Format slots with IST time for model
             const slotSummary = slots.map((s) => ({
               id: s.id,
               startsAtIST: formatInTimeZone(s.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a 'IST'"),
               location: s.location,
             }));
 
-            // If model didn't provide text, construct slot response
-            if (!turnResult.text) {
+            functionResponseParts.push({
+              functionResponse: {
+                id: toolCall.id,
+                name: "checkSlotAvailability",
+                response: { slots: slotSummary },
+              },
+            });
+
+            if (!finalAiText) {
               if (slots.length === 0) {
                 finalAiText = this.localizeText(
                   conversation.language,
@@ -620,8 +765,6 @@ export class AIConciergeService {
           } else if (toolCall.name === "bookVisitSlot") {
             const toolInput = bookVisitSlotToolSchema.parse(toolCall.args);
 
-            // M5.2 Security Boundary: Do not allow a Gemini tool call alone to finalize a booking
-            // without independent interactive buyer confirmation.
             if (!this.allowDirectToolBooking) {
               finalAiText = this.localizeText(
                 conversation.language,
@@ -629,8 +772,8 @@ export class AIConciergeService {
                 "आपकी साइट विज़िट अपॉइंटमेंट सटीक रूप से आरक्षित हो, यह सुनिश्चित करने के लिए बुकिंग के लिए हमारे इंटरैक्टिव स्लॉट चयनकर्ता के माध्यम से या हमारी बिक्री टीम के साथ सीधी पुष्टि की आवश्यकता होती है। क्या आप चाहेंगे कि मैं आपकी विज़िट को अंतिम रूप देने के लिए आपको हमारे बिक्री कार्यकारी से जोड़ूँ?",
                 "તમારી સાઇટ મુલાકાત યોગ્ય રીતે નક્કી થાય તે સુનિશ્ચિત કરવા માટે, બુકિંગ માટે અમારા ઇન્ટરેક્ટિવ સ્લોટ સિલેક્ટર દ્વારા અથવા અમારી સેલ્સ ટીમ સાથે સીધી પુષ્ટિની જરૂર છે. શું તમે ઈચ્છો છો કે તમારી મુલાકાત કન્ફર્મ કરવા હું તમને અમારા સેલ્સ એક્ઝિક્યુટિવ સાથે જોડું?"
               );
+              shouldStopEarly = true;
             } else {
-              // SECURITY: Derive leadId strictly from the validated conversation context
               const booking = await this.bookingService.bookVisit({
                 slotId: toolInput.slotId,
                 leadId: conversation.leadId,
@@ -643,17 +786,16 @@ export class AIConciergeService {
                 `आपकी साइट विज़िट ${istTime} पर ${booking.slot.location} पर कन्फर्म हो गई है। हम आपका स्वागत करने के लिए तत्पर हैं!`,
                 `તમારી સાઇટ મુલાકાત ${istTime} વાગ્યે ${booking.slot.location} ખાતે કન્ફર્મ થઈ ગઈ છે. અમે તમારું સ્વાગત કરવા આતુર છીએ!`
               );
+              shouldStopEarly = true;
             }
           } else if (toolCall.name === "handoffToExecutive") {
             const toolInput = handoffToExecutiveToolSchema.parse(toolCall.args);
 
-            // Query an active sales executive from the database
             const salesExec = await this.db.user.findFirst({
               where: { role: UserRole.SALES_EXEC },
               orderBy: { createdAt: "asc" },
             });
 
-            // Idempotent handoff creation
             const existingHandoff = await this.db.handoff.findUnique({
               where: { conversationId: conversation.id },
             });
@@ -682,16 +824,36 @@ export class AIConciergeService {
               `मैंने आपके अनुरोध के संबंध में आपको ${execName} से जोड़ दिया है। उन्हें आपकी बातचीत का विवरण मिल गया है और वे शीघ्र ही आपसे संपर्क करेंगे।`,
               `મેં તમારી વિનંતી અંગે તમને ${execName} સાથે જોડ્યા છે. તેમને તમારી વાતચીતની વિગતો મળી ગઈ છે અને તેઓ ટૂંક સમયમાં તમારો સંપર્ક કરશે.`
             );
+            shouldStopEarly = true;
           }
+        }
+
+        if (shouldStopEarly) {
+          break;
+        }
+
+        if (functionResponseParts.length > 0 && this.geminiClient.continueTurn) {
+          const modelParts = turnResult.rawParts ?? toolCalls.map((tc) => ({ functionCall: tc }));
+          conversationContents.push({
+            role: "model",
+            parts: modelParts,
+          });
+
+          conversationContents.push({
+            role: "user",
+            parts: functionResponseParts,
+          });
+
+          finalAiText = "";
+        } else {
+          break;
         }
       }
 
-      // If text was provided by the model and not overridden by specific tool formatting
-      if (!finalAiText && turnResult.text) {
-        finalAiText = turnResult.text;
+      if (!finalAiText && lastRetrievedFacts.length > 0) {
+        finalAiText = this.formatDeterministicFactResponse(lastRetrievedFacts, conversation.language);
       }
 
-      // Fallback response if neither tool nor model provided text
       if (!finalAiText) {
         finalAiText = this.localizeText(
           conversation.language,
@@ -700,7 +862,13 @@ export class AIConciergeService {
           "ENQUIVO નો સંપર્ક કરવા બદલ આભાર. આજે હું તમને અમારી લક્ઝરી રહેણાંક મિલકતો વિશે કેવી રીતે મદદ કરી શકું?"
         );
       }
-
+    } catch (turnError) {
+      if (lastRetrievedFacts.length > 0) {
+        finalAiText = this.formatDeterministicFactResponse(lastRetrievedFacts, conversation.language);
+      } else {
+        throw classifyGeminiError(turnError);
+      }
+    }
       // 5. Persist AI response
       const aiMessage = await this.db.chatMessage.create({
         data: {
@@ -730,10 +898,6 @@ export class AIConciergeService {
         handoffCreated,
         handoff: handoffRecord,
       };
-    } catch (error) {
-      // User message is already safely stored in DB; classify transient vs permanent errors
-      throw classifyGeminiError(error);
-    }
   }
 
   /**

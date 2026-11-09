@@ -19,9 +19,13 @@ export default async function LeadsPage() {
   const session = await requireStaffSession();
   const { user } = session;
 
-  const [metrics, projects] = await Promise.all([
+  const [metrics, projects, initialLeadsData] = await Promise.all([
     leadService.getLeadMetrics(user),
     leadService.getProjectsList(),
+    leadService.getLeads(
+      { page: 1, limit: 10, status: "ALL", sortBy: "createdAt", sortOrder: "desc" },
+      user
+    ),
   ]);
 
   const isSalesHead = user.role === UserRole.SALES_HEAD;
@@ -134,6 +138,8 @@ export default async function LeadsPage() {
         userRole={user.role}
         userName={user.name}
         projects={projects}
+        initialLeads={initialLeadsData.leads}
+        initialPagination={initialLeadsData.pagination}
       />
     </div>
   );

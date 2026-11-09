@@ -39,12 +39,16 @@ interface HandoffQueueClientProps {
   userRole: UserRole;
   userName: string;
   initialMetrics: HandoffMetrics;
+  initialHandoffs?: HandoffListItem[];
+  initialPagination?: HandoffPagination;
 }
 
 export function HandoffQueueClient({
   userRole,
   userName,
   initialMetrics,
+  initialHandoffs,
+  initialPagination,
 }: HandoffQueueClientProps) {
   // Query Filters & State
   const [search, setSearch] = useState("");
@@ -57,18 +61,24 @@ export function HandoffQueueClient({
   const [page, setPage] = useState<number>(1);
   const [limit] = useState<number>(10);
 
-  // Data & Metrics State
-  const [handoffs, setHandoffs] = useState<HandoffListItem[]>([]);
-  const [pagination, setPagination] = useState<HandoffPagination>({
-    total: 0,
-    page: 1,
-    limit: 10,
-    totalPages: 1,
-  });
+  // Data & Metrics State (initialized with SSR data if provided)
+  const [handoffs, setHandoffs] = useState<HandoffListItem[]>(initialHandoffs || []);
+  const [pagination, setPagination] = useState<HandoffPagination>(
+    initialPagination || {
+      total: initialHandoffs ? initialHandoffs.length : 0,
+      page: 1,
+      limit: 10,
+      totalPages: 1,
+    }
+  );
   const [metrics, setMetrics] = useState<HandoffMetrics>(initialMetrics);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!initialHandoffs);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+
+  // Track initial mount to prevent duplicate client-side fetch when SSR data is available
+  const isInitialMount = React.useRef(true);
+  const initialHandoffsRef = React.useRef(initialHandoffs);
 
   // Modal States
   const [selectedHandoffForAssignment, setSelectedHandoffForAssignment] =
@@ -93,6 +103,14 @@ export function HandoffQueueClient({
 
   // Load handoffs data from API
   useEffect(() => {
+    // If SSR data was provided, bypass duplicate initial mount fetch
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      if (initialHandoffsRef.current) {
+        return;
+      }
+    }
+
     let cancelled = false;
 
     async function load() {

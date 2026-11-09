@@ -69,6 +69,9 @@ export interface ConciergeDictionary {
   statutoryNoticeTitle: string;
   statutoryNoticeBody: string;
   reraRegBadge: string;
+  portfolioBadge: string;
+  aiBadge: string;
+  footerCompliance: string;
 }
 
 export const CONCIERGE_TRANSLATIONS: Record<Language, ConciergeDictionary> = {
@@ -150,6 +153,10 @@ export const CONCIERGE_TRANSLATIONS: Record<Language, ConciergeDictionary> = {
     statutoryNoticeBody:
       "Project specifications, pricing, and registration status (RERA Reg: DEMO-ONLY-NOT-VERIFIED) are synthetic seed data for technical evaluation purposes only. No real commercial offering or external solicitation is made.",
     reraRegBadge: "RERA Reg: DEMO-ONLY-NOT-VERIFIED",
+    portfolioBadge: "Ahmedabad Verified Residential Portfolio",
+    aiBadge: "24/7 Grounded AI",
+    footerCompliance:
+      "RERA Reg: DEMO-ONLY-NOT-VERIFIED • DPDP Act 2023 Digital Consent Enforced • Ahmedabad, Gujarat",
   },
 
   HI: {
@@ -230,6 +237,10 @@ export const CONCIERGE_TRANSLATIONS: Record<Language, ConciergeDictionary> = {
     statutoryNoticeBody:
       "परियोजना विनिर्देश, कीमतें और पंजीकरण स्थिति (RERA Reg: DEMO-ONLY-NOT-VERIFIED) केवल तकनीकी मूल्यांकन के लिए सिंथेटिक डेटा हैं। कोई व्यावसायिक प्रस्ताव नहीं है।",
     reraRegBadge: "RERA Reg: DEMO-ONLY-NOT-VERIFIED",
+    portfolioBadge: "अहमदाबाद सत्यापित आवासीय पोर्टफोलियो",
+    aiBadge: "24/7 ग्राउंडेड एआई",
+    footerCompliance:
+      "RERA Reg: DEMO-ONLY-NOT-VERIFIED • DPDP अधिनियम 2023 डिजिटल सहमति लागू • अहमदाबाद, गुजरात",
   },
 
   GU: {
@@ -310,5 +321,9 @@ export const CONCIERGE_TRANSLATIONS: Record<Language, ConciergeDictionary> = {
     statutoryNoticeBody:
       "પ્રોજેક્ટ વિશિષ્ટતાઓ, કિંમતો અને નોંધણી સ્થિતિ (RERA Reg: DEMO-ONLY-NOT-VERIFIED) ફક્ત ટેકનિકલ મૂલ્યાંકન માટેનો સિન્થેટિક ડેટા છે. કોઈ વાસ્તવિક વ્યાપારી ઓફર નથી.",
     reraRegBadge: "RERA Reg: DEMO-ONLY-NOT-VERIFIED",
+    portfolioBadge: "અમદાવાદ ચકાસાયેલ રહેણાંક પોર્ટફોલિયો",
+    aiBadge: "24/7 ગ્રાઉન્ડેડ એઆઈ",
+    footerCompliance:
+      "RERA Reg: DEMO-ONLY-NOT-VERIFIED • DPDP અધિનિયમ 2023 ડિજિટલ સંમતિ લાગુ • અમદાવાદ, ગુજરાત",
   },
 };

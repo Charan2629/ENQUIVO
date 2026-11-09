@@ -75,6 +75,9 @@ describe("Buyer Localization (i18n) Unit Tests", () => {
       "statutoryNoticeTitle",
       "statutoryNoticeBody",
       "reraRegBadge",
+      "portfolioBadge",
+      "aiBadge",
+      "footerCompliance",
     ];
 
     languages.forEach((lang) => {

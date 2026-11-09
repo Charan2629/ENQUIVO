@@ -710,21 +710,55 @@ export class LeadService {
   async getLeadMetrics(staffUser: { id: string; role: UserRole }): Promise<LeadMetrics> {
     const roleScope = getStaffLeadScope(staffUser);
 
-    const [totalLeads, visitedCount, bookedCount, escalatedCount, engagedCount, newCount] =
-      await Promise.all([
-        this.db.lead.count({ where: roleScope }),
-        this.db.lead.count({ where: { AND: [roleScope, getLifecycleStatusFilter("VISITED")] } }),
-        this.db.lead.count({ where: { AND: [roleScope, getLifecycleStatusFilter("BOOKED")] } }),
-        this.db.lead.count({ where: { AND: [roleScope, getLifecycleStatusFilter("ESCALATED")] } }),
-        this.db.lead.count({ where: { AND: [roleScope, getLifecycleStatusFilter("ENGAGED")] } }),
-        this.db.lead.count({ where: { AND: [roleScope, getLifecycleStatusFilter("NEW")] } }),
-      ]);
-
-    const sourceGroups = await this.db.lead.groupBy({
-      by: ["source"],
-      where: roleScope,
-      _count: true,
-    });
+    // Concurrently execute all independent aggregation, grouping, project and recent event queries in a single round-trip batch
+    const [
+      totalLeads,
+      visitedCount,
+      bookedCount,
+      escalatedCount,
+      engagedCount,
+      newCount,
+      sourceGroups,
+      projects,
+      unassignedProjectLeads,
+      recentEvents,
+    ] = await Promise.all([
+      this.db.lead.count({ where: roleScope }),
+      this.db.lead.count({ where: { AND: [roleScope, getLifecycleStatusFilter("VISITED")] } }),
+      this.db.lead.count({ where: { AND: [roleScope, getLifecycleStatusFilter("BOOKED")] } }),
+      this.db.lead.count({ where: { AND: [roleScope, getLifecycleStatusFilter("ESCALATED")] } }),
+      this.db.lead.count({ where: { AND: [roleScope, getLifecycleStatusFilter("ENGAGED")] } }),
+      this.db.lead.count({ where: { AND: [roleScope, getLifecycleStatusFilter("NEW")] } }),
+      this.db.lead.groupBy({
+        by: ["source"],
+        where: roleScope,
+        _count: true,
+      }),
+      this.db.project.findMany({
+        select: {
+          id: true,
+          name: true,
+          interestedLeads: {
+            where: roleScope,
+            select: { id: true },
+          },
+        },
+        orderBy: { name: "asc" },
+      }),
+      this.db.lead.count({
+        where: { AND: [roleScope, { projectId: null }] },
+      }),
+      this.db.leadSourceEvent.findMany({
+        where: { lead: roleScope },
+        orderBy: { occurredAt: "desc" },
+        take: 5,
+        include: {
+          lead: {
+            select: { id: true, leadCode: true, name: true },
+          },
+        },
+      }),
+    ]);
 
     const bySource: Record<LeadSource, number> = {
       [LeadSource.PROPERTY_PORTAL]: 0,
@@ -737,22 +771,6 @@ export class LeadService {
     for (const group of sourceGroups) {
       bySource[group.source] = group._count;
     }
-
-    const projects = await this.db.project.findMany({
-      select: {
-        id: true,
-        name: true,
-        interestedLeads: {
-          where: roleScope,
-          select: { id: true },
-        },
-      },
-      orderBy: { name: "asc" },
-    });
-
-    const unassignedProjectLeads = await this.db.lead.count({
-      where: { AND: [roleScope, { projectId: null }] },
-    });
 
     const byProject: LeadMetrics["byProject"] = projects.map((p) => ({
       projectId: p.id,
@@ -767,18 +785,6 @@ export class LeadService {
         count: unassignedProjectLeads,
       });
     }
-
-    // Recent activity: latest touchpoints or creations
-    const recentEvents = await this.db.leadSourceEvent.findMany({
-      where: { lead: roleScope },
-      orderBy: { occurredAt: "desc" },
-      take: 5,
-      include: {
-        lead: {
-          select: { id: true, leadCode: true, name: true },
-        },
-      },
-    });
 
     const recentActivity: LeadMetrics["recentActivity"] = recentEvents.map((evt) => ({
       id: evt.id,

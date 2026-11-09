@@ -13,7 +13,20 @@ export default async function HandoffsPage() {
   const session = await requireStaffSession();
   const { user } = session;
 
-  const metrics = await handoffService.getHandoffMetrics(user);
+  const [metrics, initialHandoffsData] = await Promise.all([
+    handoffService.getHandoffMetrics(user),
+    handoffService.getHandoffs(
+      {
+        page: 1,
+        limit: 10,
+        status: "ALL",
+        reason: "ALL",
+        sortBy: "createdAt",
+        sortOrder: "desc",
+      },
+      user
+    ),
+  ]);
   const isSalesHead = user.role === UserRole.SALES_HEAD;
 
   return (
@@ -51,6 +64,8 @@ export default async function HandoffsPage() {
         userRole={user.role}
         userName={user.name}
         initialMetrics={metrics}
+        initialHandoffs={initialHandoffsData.handoffs}
+        initialPagination={initialHandoffsData.pagination}
       />
     </div>
   );

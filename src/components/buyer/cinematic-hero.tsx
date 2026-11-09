@@ -104,6 +104,16 @@ export function CinematicHero({
           else if (progress < 0.80) currentStep = 4; // 4. Cloud Immersion
           else currentStep = 5;                      // 5. Portfolio
 
+          // Enforce strict pointer-events guards across stages on every scrub:
+          // Stage 1: Headline interactive, Stage 5 portfolio strictly non-interactive
+          // Stage 5: Portfolio Reveal interactive, Headline non-interactive
+          if (portfolioRevealRef.current) {
+            portfolioRevealRef.current.style.pointerEvents = currentStep === 5 ? "auto" : "none";
+          }
+          if (headlineLayerRef.current) {
+            headlineLayerRef.current.style.pointerEvents = currentStep === 1 ? "auto" : "none";
+          }
+
           if (currentStep === lastActiveStep) return;
           lastActiveStep = currentStep;
 
@@ -252,8 +262,12 @@ export function CinematicHero({
         );
 
         // Once partially occluded behind the rising building, headline fades out
-        tl.to(
+        tl.fromTo(
           headlineLayerRef.current,
+          {
+            opacity: 1,
+            pointerEvents: "auto",
+          },
           {
             opacity: 0,
             pointerEvents: "none",
@@ -443,7 +457,7 @@ export function CinematicHero({
         // Portfolio Reveal emerges through the cloud wipe
         tl.fromTo(
           portfolioRevealRef.current,
-          { opacity: 0, y: 35 },
+          { opacity: 0, y: 35, pointerEvents: "none" },
           {
             opacity: 1,
             y: 0,
@@ -483,6 +497,9 @@ export function CinematicHero({
         if (projectIdentityRef.current) {
           gsap.set(projectIdentityRef.current, { opacity: 0, display: "none" });
         }
+        if (portfolioRevealRef.current) {
+          gsap.set(portfolioRevealRef.current, { opacity: 0, display: "none", pointerEvents: "none" });
+        }
       });
     }, containerRef);
 
@@ -505,7 +522,7 @@ export function CinematicHero({
         {/* =============================================================== */}
         <div
           ref={skyRef}
-          className="absolute inset-0 bg-gradient-to-b from-[#071722] via-[#0B2231] to-[#102F43] z-[1]"
+          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[#071722] via-[#0B2231] to-[#102F43] z-[1]"
           aria-hidden="true"
         >
           {/* Subtle Ambient Golden Hour Horizon Glow */}
@@ -725,7 +742,7 @@ export function CinematicHero({
         <div
           ref={projectIdentityRef}
           style={{ opacity: 0, pointerEvents: "none" }}
-          className="absolute z-[26] inset-0 flex flex-col items-center justify-center px-4 sm:px-6 w-full text-center hidden md:flex will-change-transform"
+          className="pointer-events-none absolute z-[26] inset-0 flex flex-col items-center justify-center px-4 sm:px-6 w-full text-center hidden md:flex will-change-transform"
           aria-label="ENQUIVO Luxury Residences Ahmedabad Brand Identity"
         >
           {/* Primary Oversized Architectural Image-Clipped Typography: ENQUIVO (~70-75% viewport span) */}
@@ -817,8 +834,8 @@ export function CinematicHero({
         {/* =============================================================== */}
         <div
           ref={portfolioRevealRef}
-          style={{ opacity: 0 }}
-          className="absolute z-[40] mx-auto max-w-5xl px-4 sm:px-6 w-full text-center hidden md:block will-change-transform"
+          style={{ opacity: 0, pointerEvents: "none" }}
+          className="pointer-events-none absolute z-[40] mx-auto max-w-5xl px-4 sm:px-6 w-full text-center hidden md:block will-change-transform"
         >
           <div className="inline-flex items-center gap-2 rounded-full border border-[#102F43]/20 bg-[#102F43] px-4 py-1 text-xs font-semibold tracking-widest uppercase text-[#D6B56D] backdrop-blur-md mb-3 shadow-lg">
             <Building2 className="w-3.5 h-3.5 text-[#13A99A]" />
@@ -831,7 +848,7 @@ export function CinematicHero({
           </h2>
 
           {/* Twin Project Cards Preview (High Contrast, Clean Legibility) */}
-          <div className="mt-7 grid grid-cols-1 sm:grid-cols-2 gap-5 max-w-3xl mx-auto text-left pointer-events-auto">
+          <div className="mt-7 grid grid-cols-1 sm:grid-cols-2 gap-5 max-w-3xl mx-auto text-left">
             {/* Project 1: Prakriti Heights */}
             <div className="p-7 rounded-3xl bg-white border border-[#102F43]/15 shadow-2xl relative group hover:border-[#13A99A]/60 transition-all">
               <div className="flex items-center justify-between pb-3 border-b border-[#102F43]/10">
@@ -896,7 +913,7 @@ export function CinematicHero({
           </div>
 
           {/* Stage 4 Final Action Row */}
-          <div className="mt-7 flex flex-col sm:flex-row items-center justify-center gap-4 pointer-events-auto">
+          <div className="mt-7 flex flex-col sm:flex-row items-center justify-center gap-4">
             <Link
               href="/concierge"
               data-testid="hero-concierge-stage4-btn"

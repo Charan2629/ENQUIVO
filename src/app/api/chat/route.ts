@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError, z } from "zod";
+import { ConversationLanguage } from "@prisma/client";
+import { prisma as defaultPrisma } from "@/lib/prisma";
 import { verifySameOrigin } from "@/lib/security";
 import {
   AIConciergeService,
@@ -27,6 +29,7 @@ const chatPayloadSchema = z.object({
     .trim()
     .min(1, "Message cannot be empty")
     .max(2000, "Message exceeds 2000 characters"),
+  language: z.nativeEnum(ConversationLanguage).optional(),
   // Optional client parameters: strictly audited against the authenticated session
   conversationId: z.string().optional(),
   leadId: z.string().optional(),
@@ -76,13 +79,24 @@ export async function POST(req: Request) {
       );
     }
 
-    // 5. Server-derived identity passed to AIConciergeService
+    // 5. Update conversation language in PostgreSQL if client toggled language
+    let currentLanguage = session.conversation.language;
+    if (validated.language && validated.language !== session.conversation.language) {
+      await defaultPrisma.conversation.update({
+        where: { id: session.conversation.id },
+        data: { language: validated.language },
+      });
+      currentLanguage = validated.language;
+    }
+
+    // 6. Server-derived identity passed to AIConciergeService
     const aiService = new AIConciergeService();
     const result = await aiService.sendMessage({
       conversationId: session.conversation.id,
       leadId: session.lead.id,
       message: validated.message,
       clientMessageId: validated.clientMessageId,
+      language: currentLanguage,
     });
 
     return NextResponse.json({

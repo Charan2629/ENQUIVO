@@ -1378,6 +1378,86 @@ During final acceptance testing of the staff portal, a critical defect was ident
 
 ---
 
+## Milestone Execution: Vercel Preview Deployment Fixes (Phase 1 & Phase 2)
+
+### 1. Context & Problem Statement
+Following the Vercel Preview deployment of branch `feat/cinematic-architectural-hero` (checkpoint commit `5b8dda8`), end-to-end user acceptance testing uncovered two functional defects:
+1. **Defect 1 (AI Concierge Grounding & Multi-Turn Loop):** When buyers asked detailed project inquiries (e.g. pricing, 2/3 BHK unit allocations, locations), the assistant continually repeated the default welcome greeting: *"Thank you for contacting ENQUIVO. How can I assist you with our luxury residential properties today?"*. Additionally, buyer-selected language preferences (Hindi, Gujarati) were lost because the chat payload omitted `language`.
+2. **Defect 2 (Cinematic Hero CTA Pointer Interception):** On the public property homepage, the visible primary CTA button *"Explore Developments"* in Stage 1 could not be clicked in certain viewport configurations or after scrubbing, failing to trigger smooth scrolling to the `#projects` showcase.
+
+### 2. Root Cause Analysis
+1. **AI Concierge:** In `ai.service.ts`, when Gemini generated a `functionCall` to `getVerifiedFacts()`, the service retrieved facts from PostgreSQL but never fed the tool result back to Gemini in a follow-up conversational turn (`functionResponse`). Because Gemini never received the function output, it produced no subsequent text, forcing `ai.service.ts` to trigger its empty-response greeting fallback. Furthermore, `POST /api/chat` lacked a `language` property in its request schema, preventing buyer language choices from synchronizing with `conversation.language` in the database.
+2. **Cinematic Hero:** In `cinematic-hero.tsx`, the Stage 5 Portfolio Reveal container (`portfolioRevealRef`) was styled at `z-[40]` with `opacity: 0`, but lacked `pointer-events: none` on its root and contained child elements with `pointer-events-auto`. Because CSS pointer-events on child elements override parent transparency, the invisible Stage 5 layer intercepted mouse clicks directly over the visible Explore Developments button at `z-[10]`. Moreover, GSAP discrete string property scrubbing (`pointerEvents: "none"`) did not restore `"auto"` during reverse scrubs without explicit `.fromTo()` declarations.
+
+### 3. Architecture & Resolution
+1. **Phase 1 (AI Multi-Turn Grounding & Localization Synchronization):**
+   - Implemented a robust multi-turn conversational loop in `AIConciergeService.sendMessage()` bounded by `MAX_TOOL_ROUNDS = 3`.
+   - Formatted tool execution responses according to official `@google/genai` specifications (`role: "tool"`, `parts: [{ functionResponse: { name, response: { output } } }]`).
+   - Added deterministic localized fact fallback with RERA disclaimers (`RERA Reg: DEMO-ONLY-NOT-VERIFIED`) and guaranteed human sales escalation when verified facts are unavailable.
+   - Synchronized buyer language selection across `src/lib/validations/ai.ts`, `POST /api/chat`, `concierge-chat.tsx`, and `concierge-experience.tsx`.
+   - Added unit test suites `tests/unit/ai-multiturn-grounding.test.ts` (5 tests) and `tests/unit/buyer-persistence.test.ts` (7 tests).
+2. **Phase 2 (Hero Pointer-Events Guard & Stage Interactivity):**
+   - Configured `portfolioRevealRef` with `style={{ opacity: 0, pointerEvents: "none" }}` and `className="pointer-events-none ..."` by default.
+   - Removed rogue `pointer-events-auto` classes from child project cards and action buttons, delegating pointer responsiveness strictly to the parent state.
+   - Added active stage guards in `updateProgress(progress)`:
+     - `portfolioRevealRef.current.style.pointerEvents = currentStep === 5 ? "auto" : "none";`
+     - `headlineLayerRef.current.style.pointerEvents = currentStep === 1 ? "auto" : "none";`
+   - Configured GSAP timeline transitions using bidirectional `tl.fromTo()` with explicit `pointerEvents` properties so forward and reverse scrubbing reliably restore interactivity.
+   - Added `pointer-events-none` to `skyRef` and `projectIdentityRef` to eliminate incidental hit-test occlusion.
+
+### 4. Verification & Results
+- **Automated CDP Headless Chrome Acceptance Suite:**
+  - **Stage 1 CTA Hit-Testing:** 13/13 distributed hit-test points across the Explore Developments button resolved 100% to the button or its children (PASS).
+  - **Repeated Centre Clicks:** 5/5 repeated hardware-level clicks at visual center triggered smooth scroll navigation to `#projects`, landing between 2894px and 4157px (PASS).
+  - **Stage 5 Portfolio Cards:** Prakriti Heights and Vaastu Enclave cards and CTAs resolved 100% clickable at Stage 5, and clicking Prakriti CTA smoothly navigated to `#prakriti-heights` (PASS).
+  - **Reverse Scroll Audit:** Scrolling from Stage 5 back to Stage 1 restored 100% clickability across all 11 test points (PASS).
+  - **Horizontal Viewport Audit:** Zero horizontal overflow across Desktop (1440x900, scrollWidth 1425px) and Mobile (375x667, scrollWidth 375px) viewports (PASS).
+- `npx tsc --noEmit` — ✅ PASS (0 errors across workspace).
+- `npm run lint` — ✅ PASS (0 errors, 6 pre-existing diagnostic warnings).
+- `npm test` — ✅ PASS (224/224 unit tests passed across 16 files).
+- `npm run build` — ✅ PASS (Next.js 16.4.4 Turbopack build succeeded, 32 static & dynamic routes compiled).
+
+---
+
+## Milestone Execution: Vercel Preview Deployment Fixes (Phase 3)
+
+### 1. Context & Problem Statement
+During operational performance testing on Vercel Preview and local benchmarking, three staff-portal issues were addressed:
+1. **Redundant Session Validation During SSR:** `getStaffSession()` was executed sequentially in both `src/app/(portal)/layout.tsx` and nested dashboard pages via `requireStaffSession()`, forcing two separate cryptographic and PostgreSQL lookups over WAN to Neon on every SSR request.
+2. **Dashboard Navigation Latency & Duplicate Client Fetches:**
+   - In `lead.service.ts`, `getLeadMetrics` executed 5 sequential database operations (counts, groupBy, findMany, unassigned count, recentEvents), multiplying network round-trip latency.
+   - Client components (`lead-pipeline-client.tsx`, `handoff-queue-client.tsx`, `visits-manager-client.tsx`) did not receive initial paginated data from SSR, triggering duplicate client-side `GET /api/...` calls immediately upon mount and rendering blank loading spinners.
+   - Navigating between portal routes lacked immediate visual feedback because no `loading.tsx` shell was defined in `(portal)/dashboard`.
+3. **Missing Return to Public Showcase After Logout:** On `/login`, there was no visible, accessible navigation link allowing staff or evaluators to return to the public property homepage (`/`).
+
+### 2. Architecture & Resolution
+1. **Request-Scoped Session Deduplication (`src/lib/auth-guard.ts`):**
+   - Implemented `React.cache()` for Server Component renders, guaranteeing that multiple session checks within the same SSR render tree execute the database query exactly once.
+   - Implemented `runWithRequestSessionScope` using Node.js `AsyncLocalStorage` for test harnesses and explicit request boundaries.
+   - Guaranteed zero cross-request caching: expired, revoked (`revokedAt !== null`), or altered user roles are live-revalidated against PostgreSQL on every new HTTP request.
+2. **Concurrent Aggregation & Initial SSR Data Hydration:**
+   - Refactored `getLeadMetrics` in `src/services/lead/lead.service.ts` to run all 10 independent database queries concurrently inside a single `Promise.all` batch.
+   - Updated `LeadsPage`, `HandoffsPage`, and `VisitsPage` to fetch initial paginated data in parallel on the server and pass it as `initialLeads`, `initialHandoffs`, and `initialVisits` to their respective client components.
+   - In client components, used `isInitialMount` refs to bypass redundant `fetch()` calls on initial mount while keeping dynamic client-side filtering, searching, pagination, and sorting active.
+   - Created `src/app/(portal)/dashboard/loading.tsx` matching the ENQUIVO Deep Ocean & Jade Teal palette, providing instant route transition feedback.
+3. **Public Navigation on Login Page (`src/app/(auth)/login/login-form.tsx`):**
+   - Added an accessible "Return to Residences" link with an arrow icon above the login card pointing to `/`.
+   - Added a secondary "Back to Home" footer link, preserving authentication redirect logic and session semantics.
+
+### 3. Verification & Results
+- **Unit Tests:** `npm test` — ✅ **PASS (228/228 unit tests across 17 files)**, including new `session-deduplication.test.ts` (4 tests) verifying single-request deduplication, multi-request live revalidation, revoked session rejection, and role boundary enforcement.
+- **Integration Tests:** `npm run test:integration` — ✅ **PASS (100/100 integration tests across 12 files)** against Neon PostgreSQL.
+- **TypeScript:** `npx tsc --noEmit` — ✅ **PASS (0 errors)**.
+- **ESLint:** `npm run lint` — ✅ **PASS (0 errors, 6 pre-existing diagnostic warnings)**.
+- **Production Build:** `npm run build` — ✅ **PASS (Next.js 16.4.4 Turbopack, 32 static & dynamic routes compiled)**.
+- **Measured Warm SSR Latency (Next.js 16 production server):**
+  - Overview (`/dashboard`): avg 11ms (min: 11ms)
+  - Lead Pipeline (`/dashboard/leads`): avg 11ms (min: 10ms)
+  - Handoff Queue (`/dashboard/handoffs`): avg 12ms (min: 12ms)
+  - Visits & Slots (`/dashboard/visits`): avg 15ms (min: 11ms)
+
+---
+
 ## Unverified Historical Information Register
 
 In accordance with strict verification rules, the following details cannot be independently verified from the repository git log and are explicitly recorded as unverified assumptions:

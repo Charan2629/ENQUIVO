@@ -9,6 +9,7 @@ export const chatInputSchema = z.object({
   message: z.string().min(1, "Message cannot be empty").max(2000, "Message exceeds 2000 characters"),
   leadId: z.string().optional(),
   clientMessageId: z.string().trim().min(1).max(100).optional(),
+  language: z.nativeEnum(ConversationLanguage).optional(),
 });
 
 export type ChatInput = z.infer<typeof chatInputSchema>;

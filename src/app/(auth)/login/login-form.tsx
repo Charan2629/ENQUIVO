@@ -1,8 +1,19 @@
 "use client";
 
 import React, { useState } from "react";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Lock, Mail, Eye, EyeOff, ShieldAlert, ArrowRight, Building2, ShieldCheck } from "lucide-react";
+import {
+  Lock,
+  Mail,
+  Eye,
+  EyeOff,
+  ShieldAlert,
+  ArrowRight,
+  ArrowLeft,
+  Building2,
+  ShieldCheck,
+} from "lucide-react";
 
 export function LoginForm() {
   const searchParams = useSearchParams();
@@ -88,6 +99,18 @@ export function LoginForm() {
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
+        <div className="mb-4 flex items-center justify-between">
+          <Link
+            href="/"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-white/60 hover:text-[#38C2B4] transition-colors group cursor-pointer"
+            aria-label="Return to Residences"
+          >
+            <ArrowLeft className="w-3.5 h-3.5 text-[#38C2B4] group-hover:-translate-x-0.5 transition-transform" />
+            <span>Return to Residences</span>
+          </Link>
+          <span className="text-[11px] text-white/40">Public Showcase</span>
+        </div>
+
         <div className="bg-[#102F43]/90 border border-[#183442] rounded-2xl p-6 sm:p-8 shadow-2xl backdrop-blur-md">
           <div className="flex items-center justify-between pb-6 mb-6 border-b border-[#183442]">
             <div>
@@ -243,8 +266,15 @@ export function LoginForm() {
           )}
         </div>
 
-        <div className="mt-6 text-center text-xs text-white/40">
-          ENQUIVO AI Lead-Response & Site-Visit Assistant • Ahmedabad, Gujarat
+        <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-4 text-xs text-white/40">
+          <span>ENQUIVO AI Lead-Response & Site-Visit Assistant • Ahmedabad</span>
+          <span className="hidden sm:inline text-white/20">•</span>
+          <Link
+            href="/"
+            className="text-white/60 hover:text-[#38C2B4] transition-colors underline underline-offset-4"
+          >
+            Back to Home
+          </Link>
         </div>
       </div>
     </div>

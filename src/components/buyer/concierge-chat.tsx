@@ -36,22 +36,38 @@ interface HandoffInfo {
   assignedToName: string;
 }
 
-interface ConciergeChatProps {
+export interface ConciergeChatProps {
   initialProjectId?: string | null;
   className?: string;
   compact?: boolean;
+  language?: Language;
+  onLanguageChange?: (lang: Language) => void;
 }
 
 export function ConciergeChat({
   initialProjectId,
   className = "",
   compact = false,
+  language: propLanguage,
+  onLanguageChange,
 }: ConciergeChatProps) {
   // Session State
   const [loadingSession, setLoadingSession] = useState(true);
   const [authenticated, setAuthenticated] = useState(false);
   const [buyerName, setBuyerName] = useState("");
-  const [language, setLanguage] = useState<Language>("EN");
+  const [internalLanguage, setInternalLanguage] = useState<Language>(propLanguage || "EN");
+
+  const onLanguageChangeRef = useRef(onLanguageChange);
+  useEffect(() => {
+    onLanguageChangeRef.current = onLanguageChange;
+  });
+
+  const language = propLanguage || internalLanguage;
+
+  const handleLanguageChange = (lang: Language) => {
+    setInternalLanguage(lang);
+    onLanguageChange?.(lang);
+  };
 
   // Translation Dictionary
   const t = CONCIERGE_TRANSLATIONS[language];
@@ -100,8 +116,21 @@ export function ConciergeChat({
               data.conversation?.language === "GU"
                 ? data.conversation.language
                 : "EN";
-            setLanguage(sessionLang);
-            setMessages(data.messages || []);
+            setInternalLanguage(sessionLang);
+            onLanguageChangeRef.current?.(sessionLang);
+            if (data.messages && data.messages.length > 0) {
+              setMessages(data.messages);
+            } else {
+              const welcomeText = getWelcomeGreeting(sessionLang, data.lead?.name || "Valued Buyer");
+              setMessages([
+                {
+                  id: "welcome-greeting",
+                  role: "AI",
+                  content: welcomeText,
+                  createdAt: new Date().toISOString(),
+                },
+              ]);
+            }
             if (data.handoff) {
               setHandoff(data.handoff);
             }
@@ -172,7 +201,8 @@ export function ConciergeChat({
         data.conversation?.language === "HI" ||
         data.conversation?.language === "GU"
       ) {
-        setLanguage(data.conversation.language);
+        setInternalLanguage(data.conversation.language);
+        onLanguageChange?.(data.conversation.language);
       }
 
       // Load existing conversation messages if resumed, or add welcoming introductory greeting
@@ -231,7 +261,7 @@ export function ConciergeChat({
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: textToSend, clientMessageId }),
+        body: JSON.stringify({ message: textToSend, clientMessageId, language }),
       });
 
       const data = await res.json();
@@ -424,7 +454,7 @@ export function ConciergeChat({
               <button
                 key={lang}
                 type="button"
-                onClick={() => setLanguage(lang)}
+                onClick={() => handleLanguageChange(lang)}
                 className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all cursor-pointer ${
                   language === lang
                     ? "bg-[#102F43] text-white shadow-xs"
@@ -591,7 +621,7 @@ export function ConciergeChat({
               <button
                 key={lang}
                 type="button"
-                onClick={() => setLanguage(lang)}
+                onClick={() => handleLanguageChange(lang)}
                 className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-all cursor-pointer ${
                   language === lang
                     ? "bg-[#D6B56D] text-[#102F43] font-bold shadow-2xs"

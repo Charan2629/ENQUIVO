@@ -8,12 +8,14 @@ export const slotQuerySchema = z.object({
   status: z
     .enum(["ALL", VisitSlotStatus.AVAILABLE, VisitSlotStatus.BOOKED])
     .default("ALL"),
+  project: z.string().trim().optional(),
+  search: z.string().trim().optional(),
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
   includePast: z
-    .enum(["true", "false"])
-    .default("false")
-    .transform((val) => val === "true"),
+    .union([z.boolean(), z.enum(["true", "false"])])
+    .default(false)
+    .transform((val) => val === true || val === "true"),
   limit: z.coerce.number().int().min(1).max(200).default(100),
 });
 

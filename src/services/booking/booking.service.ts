@@ -578,6 +578,14 @@ export class BookingService {
       where.startsAt = { gt: now };
     }
 
+    const searchTarget = (validated.project || validated.search)?.trim();
+    if (searchTarget && searchTarget !== "ALL") {
+      where.location = {
+        contains: searchTarget,
+        mode: "insensitive",
+      };
+    }
+
     if (validated.from || validated.to) {
       where.startsAt = {
         ...(where.startsAt && typeof where.startsAt === "object" ? where.startsAt : {}),

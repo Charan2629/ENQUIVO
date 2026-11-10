@@ -142,7 +142,26 @@ export function CreateSlotModal({ onClose, onSuccess }: CreateSlotModalProps) {
 
           {/* Location */}
           <div className="space-y-1">
-            <label className="text-xs font-medium text-slate-300">Location / Venue</label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-slate-300">Location / Venue</label>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => setLocation("Prakriti Heights Experience Gallery, SG Highway, Ahmedabad")}
+                  className="text-[10px] text-purple-400 hover:text-purple-300 underline"
+                >
+                  Prakriti
+                </button>
+                <span className="text-[10px] text-slate-600">•</span>
+                <button
+                  type="button"
+                  onClick={() => setLocation("Vaastu Enclave Site Office, Shela, Ahmedabad")}
+                  className="text-[10px] text-purple-400 hover:text-purple-300 underline"
+                >
+                  Vaastu
+                </button>
+              </div>
+            </div>
             <input
               type="text"
               value={location}

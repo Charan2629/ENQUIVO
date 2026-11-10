@@ -78,6 +78,7 @@ export function VisitsManagerClient({
   // Slots Tab State
   // -------------------------------------------------------------------------
   const [slotStatus, setSlotStatus] = useState<string>("ALL");
+  const [slotProject, setSlotProject] = useState<string>("ALL");
   const [includePastSlots, setIncludePastSlots] = useState<boolean>(false);
   const [slots, setSlots] = useState<VisitSlotItem[]>([]);
   const [slotMetrics, setSlotMetrics] = useState<{
@@ -188,6 +189,7 @@ export function VisitsManagerClient({
       try {
         const params = new URLSearchParams();
         if (slotStatus !== "ALL") params.append("status", slotStatus);
+        if (slotProject !== "ALL") params.append("project", slotProject);
         params.append("includePast", includePastSlots ? "true" : "false");
 
         const [resSlots, resMetrics] = await Promise.all([
@@ -195,17 +197,17 @@ export function VisitsManagerClient({
           fetch("/api/slots/metrics"),
         ]);
 
+        if (resMetrics.ok && !cancelled) {
+          const dataMetrics = await resMetrics.json();
+          setSlotMetrics(dataMetrics.data);
+        }
+
         if (!resSlots.ok) throw new Error("Failed to load appointment slots");
 
         const dataSlots = await resSlots.json();
 
         if (!cancelled) {
           setSlots(dataSlots.data);
-        }
-
-        if (resMetrics.ok && !cancelled) {
-          const dataMetrics = await resMetrics.json();
-          setSlotMetrics(dataMetrics.data);
         }
       } catch (err) {
         if (!cancelled) {
@@ -223,7 +225,7 @@ export function VisitsManagerClient({
     return () => {
       cancelled = true;
     };
-  }, [activeTab, slotStatus, includePastSlots, refreshSlotsIndex]);
+  }, [activeTab, slotStatus, slotProject, includePastSlots, refreshSlotsIndex]);
 
   const fetchVisits = useCallback(() => {
     setRefreshVisitsIndex((i) => i + 1);
@@ -701,7 +703,7 @@ export function VisitsManagerClient({
 
           {/* Slots Filter Bar */}
           <div className="p-4 rounded-xl bg-slate-900 border border-slate-800 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
-            <div className="flex items-center gap-3 text-xs">
+            <div className="flex flex-wrap items-center gap-3 text-xs">
               <select
                 value={slotStatus}
                 onChange={(e) => setSlotStatus(e.target.value)}
@@ -710,6 +712,16 @@ export function VisitsManagerClient({
                 <option value="ALL">All Slot States</option>
                 <option value="AVAILABLE">Available Only</option>
                 <option value="BOOKED">Booked Only</option>
+              </select>
+
+              <select
+                value={slotProject}
+                onChange={(e) => setSlotProject(e.target.value)}
+                className="px-2.5 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-slate-300 focus:outline-none focus:border-purple-500"
+              >
+                <option value="ALL">All Developments</option>
+                <option value="Prakriti Heights">Prakriti Heights</option>
+                <option value="Vaastu Enclave">Vaastu Enclave</option>
               </select>
 
               <label className="flex items-center gap-2 cursor-pointer text-slate-400 select-none">
@@ -774,7 +786,21 @@ export function VisitsManagerClient({
 
                           {/* Location */}
                           <td className="px-4 py-3.5 align-top max-w-xs">
-                            <div className="text-slate-300 truncate">{slot.location}</div>
+                            {slot.location.toLowerCase().includes("prakriti") && (
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                  Prakriti Heights
+                                </span>
+                              </div>
+                            )}
+                            {slot.location.toLowerCase().includes("vaastu") && (
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                                  Vaastu Enclave
+                                </span>
+                              </div>
+                            )}
+                            <div className="text-slate-300 truncate text-[11px]">{slot.location}</div>
                           </td>
 
                           {/* Status */}

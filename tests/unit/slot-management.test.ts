@@ -89,6 +89,20 @@ describe("Slot Management Validation Schemas", () => {
       const parsed = slotQuerySchema.parse({ includePast: "true" });
       expect(parsed.includePast).toBe(true);
     });
+
+    it("accepts boolean false and true for includePast (idempotent re-parsing)", () => {
+      const parsedFalse = slotQuerySchema.parse({ includePast: false });
+      expect(parsedFalse.includePast).toBe(false);
+
+      const parsedTrue = slotQuerySchema.parse({ includePast: true });
+      expect(parsedTrue.includePast).toBe(true);
+    });
+
+    it("accepts project and search filters", () => {
+      const parsed = slotQuerySchema.parse({ project: "Prakriti Heights", search: "SG Highway" });
+      expect(parsed.project).toBe("Prakriti Heights");
+      expect(parsed.search).toBe("SG Highway");
+    });
   });
 });
 
@@ -255,6 +269,140 @@ describe("BookingService Slot Management Business Logic", () => {
         where: { id: "slot-clean-1" },
       });
       expect(result.success).toBe(true);
+    });
+  });
+
+  describe("getAllSlots", () => {
+    it("retrieves slots matching status, project (Prakriti Heights), and past filters without throwing on boolean includePast", async () => {
+      const mockPrakritiSlot = {
+        id: "slot-ph-1",
+        startsAt: new Date(Date.now() + 3600000),
+        endsAt: new Date(Date.now() + 7200000),
+        status: VisitSlotStatus.AVAILABLE,
+        location: "Prakriti Heights Experience Gallery, SG Highway, Ahmedabad",
+        siteVisits: [],
+        _count: { siteVisits: 0 },
+      };
+
+      const mockDb = {
+        visitSlot: {
+          findMany: vi.fn().mockResolvedValue([mockPrakritiSlot]),
+        },
+      };
+
+      const service = new BookingService(mockDb as never);
+
+      // Query with boolean includePast (mimicking route handler passing queryResult.data)
+      const results = await service.getAllSlots({
+        status: "ALL",
+        project: "Prakriti Heights",
+        includePast: false,
+        limit: 50,
+      });
+
+      expect(mockDb.visitSlot.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            location: {
+              contains: "Prakriti Heights",
+              mode: "insensitive",
+            },
+            startsAt: expect.objectContaining({ gt: expect.any(Date) }),
+          }),
+          take: 50,
+        })
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].id).toBe("slot-ph-1");
+      expect(results[0].location).toContain("Prakriti Heights");
+      expect(results[0].hasConfirmedBooking).toBe(false);
+      expect(results[0].activeBooking).toBeNull();
+      expect(results[0].startsAtIST).toContain("IST");
+    });
+
+    it("retrieves slots matching project filter for Vaastu Enclave with active booking details", async () => {
+      const mockVaastuSlot = {
+        id: "slot-ve-1",
+        startsAt: new Date(Date.now() + 86400000),
+        endsAt: new Date(Date.now() + 90000000),
+        status: VisitSlotStatus.BOOKED,
+        location: "Vaastu Enclave Site Office, Shela, Ahmedabad",
+        siteVisits: [
+          {
+            id: "visit-1",
+            bookingStatus: "CONFIRMED",
+            lead: {
+              id: "lead-1",
+              name: "Hardik Patel",
+              phone: "+919876543210",
+              leadCode: "LD-58210",
+            },
+          },
+        ],
+        _count: { siteVisits: 1 },
+      };
+
+      const mockDb = {
+        visitSlot: {
+          findMany: vi.fn().mockResolvedValue([mockVaastuSlot]),
+        },
+      };
+
+      const service = new BookingService(mockDb as never);
+
+      const results = await service.getAllSlots({
+        status: "BOOKED",
+        project: "Vaastu Enclave",
+        includePast: true,
+        limit: 25,
+      });
+
+      expect(mockDb.visitSlot.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: VisitSlotStatus.BOOKED,
+            location: {
+              contains: "Vaastu Enclave",
+              mode: "insensitive",
+            },
+          }),
+          take: 25,
+        })
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0].id).toBe("slot-ve-1");
+      expect(results[0].location).toContain("Vaastu Enclave");
+      expect(results[0].hasConfirmedBooking).toBe(true);
+      expect(results[0].activeBooking?.leadName).toBe("Hardik Patel");
+      expect(results[0].activeBooking?.leadCode).toBe("LD-58210");
+      expect(results[0].totalVisitsCount).toBe(1);
+    });
+  });
+
+  describe("getSlotMetrics", () => {
+    it("returns live counts across total, available, booked, and upcoming", async () => {
+      const mockDb = {
+        visitSlot: {
+          count: vi
+            .fn()
+            .mockResolvedValueOnce(40) // total
+            .mockResolvedValueOnce(25) // available
+            .mockResolvedValueOnce(15) // booked
+            .mockResolvedValueOnce(28), // upcoming
+        },
+      };
+
+      const service = new BookingService(mockDb as never);
+      const metrics = await service.getSlotMetrics();
+
+      expect(metrics).toEqual({
+        totalSlots: 40,
+        availableSlots: 25,
+        bookedSlots: 15,
+        upcomingSlots: 28,
+      });
     });
   });
 });

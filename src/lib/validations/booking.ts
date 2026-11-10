@@ -7,6 +7,8 @@ import { AttendanceOutcome } from "@prisma/client";
 export const getAvailableSlotsSchema = z.object({
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
+  project: z.string().trim().optional(),
+  location: z.string().trim().optional(),
 });
 
 export type GetAvailableSlotsInput = z.infer<typeof getAvailableSlotsSchema>;

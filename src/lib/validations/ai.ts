@@ -31,6 +31,7 @@ export type GetVerifiedFactsToolInput = z.infer<typeof getVerifiedFactsToolSchem
 export const checkSlotAvailabilityToolSchema = z.object({
   startDate: z.string().optional(),
   endDate: z.string().optional(),
+  project: z.string().optional(),
 });
 
 export type CheckSlotAvailabilityToolInput = z.infer<typeof checkSlotAvailabilityToolSchema>;

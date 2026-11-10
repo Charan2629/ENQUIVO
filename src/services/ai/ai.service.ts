@@ -7,12 +7,13 @@ import {
   FactSheetStatus,
   HandoffStatus,
   UserRole,
+  VisitSlot,
   Prisma,
 } from "@prisma/client";
 import { formatInTimeZone } from "date-fns-tz";
 import { prisma as defaultPrisma } from "@/lib/prisma";
 import { isInternalAuditMessage } from "@/lib/chat-message";
-import { BookingService } from "@/services/booking/booking.service";
+import { BookingService, SlotUnavailableError } from "@/services/booking/booking.service";
 import {
   ChatInput,
   chatInputSchema,
@@ -230,12 +231,13 @@ export const aiToolDeclarations = [
   },
   {
     name: "checkSlotAvailability",
-    description: "Check upcoming available site visit appointment slots.",
+    description: "Check upcoming available site visit appointment slots for our projects in Ahmedabad.",
     parameters: {
       type: "OBJECT",
       properties: {
         startDate: { type: "STRING" },
         endDate: { type: "STRING" },
+        project: { type: "STRING", description: "Optional project name (Prakriti Heights or Vaastu Enclave) to filter available visit slots." },
       },
     },
   },
@@ -253,7 +255,7 @@ export const aiToolDeclarations = [
   },
   {
     name: "handoffToExecutive",
-    description: "Escalate the conversation to a human sales executive when information is missing, unlisted amenities are requested, price negotiations occur, or buyer asks for a human.",
+    description: "Escalate the conversation to a human sales executive when project-specific pricing or technical details are missing from verified facts, unlisted amenities are requested, price negotiations occur, or buyer asks for a human. Do NOT use for site visit requests.",
     parameters: {
       type: "OBJECT",
       properties: {
@@ -406,7 +408,11 @@ Strict Grounding & Governance Rules:
 1. All property facts (pricing, configurations, unit counts, amenities, locations) MUST be strictly grounded in active, verified facts retrieved from getVerifiedFacts.
 2. NEVER invent, extrapolate, or speculate about unlisted amenities (e.g. swimming pool, private plunge pool, pet park, helipad) or discounts/price negotiations.
 3. If a buyer asks for information not present in the verified facts, or requests price negotiations, discounts, or asks for a human, you MUST immediately call handoffToExecutive.
-4. When booking a visit, you MUST verify that the buyer has explicitly confirmed the slot before invoking bookVisitSlot.
+4. Site Visit Booking Authority:
+   - When you present upcoming available visit slots to the buyer and ask which time works best, the buyer's selection (by date/time, slot ID, or option number such as "10:00 AM", "11 Nov 10:00 AM", or slot ID) represents explicit slot selection and booking intent.
+   - When the buyer chooses or confirms a specific slot, you MUST immediately call bookVisitSlot with the selected slotId and confirmed: true.
+   - NEVER tell the buyer to use an external or interactive slot selector, and do not tell them to contact a sales executive just to complete a routine booking. You have direct booking authority via bookVisitSlot.
+   - Only state that the visit is confirmed AFTER bookVisitSlot executes and confirms the reservation.
 5. Property Facts Compliance: Always include the compliance notice: "${reraDisclaimer}" when presenting property specifications, pricing, configurations, or amenities. Do NOT append the compliance notice to pure conversational clarifications, greetings, or disambiguation questions.
 6. Multi-Option Follow-Ups:
    - When you have offered multiple choices (e.g. checking visit slots vs connecting with a sales executive) and the buyer replies with an ambiguous affirmative (such as "yes", "yes I would", "sure", "please do", "हाँ", "હા") without specifying which option they want:
@@ -418,7 +424,18 @@ Strict Grounding & Governance Rules:
 2. Speak with a sales executive"
    - Never invoke bookVisitSlot or handoffToExecutive on an ambiguous affirmative.
    - Do NOT append the RERA compliance notice to pure conversational clarifications or disambiguation questions.
-7. Choice Selection: If the buyer selects "1" or "Schedule a site visit", invoke checkSlotAvailability. If the buyer selects "2" or "Speak with a sales executive", invoke handoffToExecutive with reason BUYER_REQUESTED.
+7. Site Visit & Choice Handling:
+   - When a buyer requests to schedule a site visit or visit a property:
+     - If no project has been specified, ask which project they would like to visit:
+       "Certainly! We have two premier developments in Ahmedabad:
+1. Prakriti Heights (SG Highway)
+2. Vaastu Enclave (Shela)
+
+Which project would you like to visit?"
+     - When a project is specified (Prakriti Heights or Vaastu Enclave), invoke checkSlotAvailability to retrieve available visit slots and present them to the buyer.
+     - NEVER invoke handoffToExecutive with MISSING_PROJECT_INFO simply because a buyer asks to visit a project or schedule a visit. Missing project information applies ONLY to unlisted technical/architectural specifications or unlisted project-specific pricing.
+     - Only invoke bookVisitSlot after the buyer has selected a specific slot time.
+   - If the buyer selects "Speak with a sales executive" or asks for sales, invoke handoffToExecutive with reason BUYER_REQUESTED.
 ${projectContext ? `\nTarget Project Context: ${projectContext}` : ""}`;
 }
 
@@ -430,7 +447,7 @@ export class AIConciergeService {
     private db: PrismaClient = defaultPrisma,
     private bookingService: BookingService = new BookingService(db),
     private geminiClient: GeminiClientInterface = createDefaultGeminiClient(),
-    private allowDirectToolBooking: boolean = false
+    private allowDirectToolBooking: boolean = true
   ) { }
 
   /**
@@ -584,10 +601,311 @@ export class AIConciergeService {
   isNumberedDisambiguationPrompt(text: string): boolean {
     const lower = text.toLowerCase();
     return (
-      lower.includes("please choose one option") ||
-      text.includes("कृपया एक विकल्प चुनें") ||
-      text.includes("કૃપા કરીને એક વિકલ્પ પસંદ કરો")
+      (lower.includes("please choose one option") ||
+        text.includes("कृपया एक विकल्प चुनें") ||
+        text.includes("કૃપા કરીને એક વિકલ્પ પસંદ કરો")) &&
+      (lower.includes("schedule a site visit") ||
+        text.includes("साइट विज़िट निर्धारित करें") ||
+        text.includes("સાઇટ મુલાકાત શેડ્યૂલ કરો"))
     );
+  }
+
+  /**
+   * Detects whether an assistant message was the project selection prompt.
+   */
+  isProjectSelectionPrompt(text: string): boolean {
+    const lower = text.toLowerCase();
+    const mentionsBothProjects =
+      (lower.includes("prakriti") && lower.includes("vaastu")) ||
+      (text.includes("प्रकृति") && text.includes("वास्तु")) ||
+      (text.includes("પ્રકૃતિ") && text.includes("વાસ્તુ"));
+
+    const asksWhichProject =
+      lower.includes("which project") ||
+      lower.includes("which development") ||
+      text.includes("किस प्रोजेक्ट") ||
+      text.includes("કયા પ્રોજેક્ટ");
+
+    return mentionsBothProjects && asksWhichProject;
+  }
+
+  /**
+   * Detects whether an assistant message was presenting available visit slots and asking the buyer to choose.
+   */
+  isSlotOfferingPrompt(text: string): boolean {
+    if (this.offersSiteVisitOrSalesExecutive(text)) {
+      return false;
+    }
+
+    const lower = text.toLowerCase();
+    const asksTime =
+      lower.includes("which time works best for you so i can confirm it") ||
+      lower.includes("which time works best") ||
+      text.includes("पुष्टि कर सकूँ") ||
+      text.includes("પુષ્ટિ કરી શકું");
+
+    const mentionsSlots =
+      lower.includes("upcoming available slots") ||
+      text.includes("आगामी उपलब्ध स्लॉट") ||
+      text.includes("ઉપલબ્ધ સ્લોટ્સ") ||
+      text.includes("•");
+
+    return asksTime && mentionsSlots;
+  }
+
+  /**
+   * Resolves a buyer's slot selection from their message against the currently available slots for the active project.
+   * Handles:
+   * 1. Exact slot ID match
+   * 2. Ordinal selection (e.g. 1, first, 2, second, 3, third, etc.)
+   * 3. Formatted IST date and time match (e.g. "11 Nov 2026, 10:00 AM IST", "10:00 AM", "10 AM")
+   */
+  resolveSlotFromMessage(
+    message: string,
+    slots: VisitSlot[]
+  ): { status: "MATCH"; slot?: VisitSlot } | { status: "AMBIGUOUS" } | { status: "NO_MATCH" } {
+    if (slots.length === 0) {
+      return { status: "NO_MATCH" };
+    }
+
+    const rawLower = message.trim().toLowerCase();
+    const cleaned = rawLower
+      .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?!]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    // 1. Direct slot ID match
+    for (const slot of slots) {
+      if (message.includes(slot.id)) {
+        return { status: "MATCH", slot };
+      }
+    }
+
+    // 2. Ordinal / Index match (e.g. "1", "option 1", "first", "1st", "पहला", "પહેલો")
+    if (/^(1|option\s*1|first|1st|૧|१|पहला|પહેલો)(\s+(slot|સ્લોટ|स्लॉट))?$/i.test(cleaned)) {
+      return { status: "MATCH", slot: slots[0] };
+    }
+    if (
+      /^(2|option\s*2|second|2nd|૨|२|दूसरा|બીજો)(\s+(slot|સ્લોટ|स्लॉट))?$/i.test(cleaned) &&
+      slots.length > 1
+    ) {
+      return { status: "MATCH", slot: slots[1] };
+    }
+    if (
+      /^(3|option\s*3|third|3rd|૩|३|तीसरा|ત્રીજો)(\s+(slot|સ્લોટ|स्लॉट))?$/i.test(cleaned) &&
+      slots.length > 2
+    ) {
+      return { status: "MATCH", slot: slots[2] };
+    }
+
+    // 3. Exact full IST string match
+    for (const slot of slots) {
+      const fullIST = formatInTimeZone(slot.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a 'IST'").toLowerCase();
+      const withoutIST = formatInTimeZone(slot.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a").toLowerCase();
+      if (rawLower.includes(fullIST) || rawLower.includes(withoutIST)) {
+        return { status: "MATCH", slot };
+      }
+    }
+
+    // 4. Date and/or Time component match
+    const matchingSlots: VisitSlot[] = [];
+    for (const slot of slots) {
+      const timeWithAmPm = formatInTimeZone(slot.startsAt, "Asia/Kolkata", "hh:mm a").toLowerCase(); // "10:00 am"
+      const timeWithoutLeadingZero = formatInTimeZone(slot.startsAt, "Asia/Kolkata", "h:mm a").toLowerCase(); // "10:00 am" or "2:30 pm"
+      const shortAmPm = timeWithoutLeadingZero.replace(":00", ""); // "10 am" or "2:30 pm"
+      const shortNoSpace = shortAmPm.replace(/\s+/g, ""); // "10am" or "2:30pm"
+      const time24h = formatInTimeZone(slot.startsAt, "Asia/Kolkata", "HH:mm"); // "10:00" or "14:30"
+      const dayStr = formatInTimeZone(slot.startsAt, "Asia/Kolkata", "dd MMM").toLowerCase(); // "11 nov"
+      const dayNum = formatInTimeZone(slot.startsAt, "Asia/Kolkata", "d").toLowerCase(); // "11"
+
+      const timeMatches =
+        rawLower.includes(timeWithAmPm) ||
+        rawLower.includes(timeWithoutLeadingZero) ||
+        rawLower.includes(shortAmPm) ||
+        rawLower.includes(shortNoSpace) ||
+        rawLower.includes(time24h);
+
+      if (timeMatches) {
+        const withoutTime = rawLower
+          .replace(timeWithAmPm, "")
+          .replace(timeWithoutLeadingZero, "")
+          .replace(time24h, "")
+          .replace(shortAmPm, "")
+          .replace(shortNoSpace, "")
+          .trim();
+
+        const hasDateInfo =
+          withoutTime.includes("nov") ||
+          withoutTime.includes("november") ||
+          withoutTime.includes("dec") ||
+          withoutTime.includes("december") ||
+          withoutTime.includes("jan") ||
+          withoutTime.includes("january") ||
+          /\b\d{1,2}(st|nd|rd|th)\b/.test(withoutTime) ||
+          /\b\d{1,2}[/-]\d{1,2}\b/.test(withoutTime);
+
+        if (hasDateInfo) {
+          if (withoutTime.includes(dayStr) || withoutTime.includes(dayNum)) {
+            matchingSlots.push(slot);
+          }
+        } else {
+          matchingSlots.push(slot);
+        }
+      }
+    }
+
+    if (matchingSlots.length === 1) {
+      return { status: "MATCH", slot: matchingSlots[0] };
+    }
+    if (matchingSlots.length > 1) {
+      return { status: "AMBIGUOUS" };
+    }
+
+    return { status: "NO_MATCH" };
+  }
+
+  /**
+   * Detects whether text refers to Prakriti Heights or Vaastu Enclave.
+   */
+  detectProject(text: string): "Prakriti Heights" | "Vaastu Enclave" | null {
+    const lower = text.toLowerCase();
+    if (
+      lower.includes("prakriti") ||
+      lower.includes("sg highway") ||
+      text.includes("प्रकृति") ||
+      text.includes("પ્રકૃતિ")
+    ) {
+      return "Prakriti Heights";
+    }
+    if (
+      lower.includes("vaastu") ||
+      lower.includes("vastu") ||
+      lower.includes("shela") ||
+      text.includes("वास्तु") ||
+      text.includes("વાસ્તુ")
+    ) {
+      return "Vaastu Enclave";
+    }
+    return null;
+  }
+
+  /**
+   * Returns authentic trilingual localized project name.
+   */
+  getLocalizedProjectName(pName: string, lang: ConversationLanguage): string {
+    if (
+      pName.toLowerCase().includes("prakriti") ||
+      pName.includes("प्रकृति") ||
+      pName.includes("પ્રકૃતિ")
+    ) {
+      if (lang === ConversationLanguage.HI) return "प्रकृति हाइट्स";
+      if (lang === ConversationLanguage.GU) return "પ્રકૃતિ હાઇટ્સ";
+      return "Prakriti Heights";
+    }
+    if (
+      pName.toLowerCase().includes("vaastu") ||
+      pName.includes("वास्तु") ||
+      pName.includes("વાસ્તુ")
+    ) {
+      if (lang === ConversationLanguage.HI) return "वास्तु एन्क्लेव";
+      if (lang === ConversationLanguage.GU) return "વાસ્તુ એન્ક્લેવ";
+      return "Vaastu Enclave";
+    }
+    return pName;
+  }
+
+  /**
+   * Detects whether the buyer expressed intent to schedule or book a site visit.
+   */
+  isSiteVisitIntent(text: string): boolean {
+    const normalized = text
+      .trim()
+      .toLowerCase()
+      .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?!]/g, " ")
+      .replace(/\s+/g, " ");
+
+    const visitPhrases = [
+      /schedule(\s+a)?\s+(site\s+)?visit/,
+      /book(\s+a)?\s+(site\s+)?visit/,
+      /like\s+to\s+(schedule|book|have)(\s+a)?\s+(site\s+)?visit/,
+      /want\s+to\s+(schedule|book|have)(\s+a)?\s+(site\s+)?visit/,
+      /can\s+i\s+(schedule|book|have)(\s+a)?\s+(site\s+)?visit/,
+      /visit(\s+the)?\s+(property|project|site|apartments?|flats?)/,
+      /(want|like|wish)\s+to\s+see(\s+the)?\s+(property|project|site|prakriti|vaastu)/,
+      /(want|like|wish)\s+to\s+visit(\s+the)?\s+(property|project|site|prakriti|vaastu)/,
+      /plan(\s+a)?\s+(site\s+)?visit/,
+      /site\s+visit/,
+    ];
+
+    if (visitPhrases.some((p) => p.test(normalized))) {
+      return true;
+    }
+
+    if (
+      text.includes("साइट विज़िट") ||
+      (text.includes("विज़िट") && (text.includes("शेड्यूल") || text.includes("निर्धारित") || text.includes("बुक") || text.includes("करना"))) ||
+      (text.includes("देखना") && (text.includes("प्रॉपर्टी") || text.includes("प्रोजेक्ट") || text.includes("प्रकृति") || text.includes("वास्तु") || text.includes("साइट")))
+    ) {
+      return true;
+    }
+
+    if (
+      text.includes("સાઇટ મુલાકાત") ||
+      (text.includes("મુલાકાત") && (text.includes("શેડ્યૂલ") || text.includes("બુક") || text.includes("લેવા"))) ||
+      (text.includes("જોવા") && (text.includes("પ્રોપર્ટી") || text.includes("પ્રોજેક્ટ") || text.includes("પ્રકૃતિ") || text.includes("વાસ્તુ") || text.includes("સાઇટ")))
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Detects whether the buyer expressed intent to speak with a human sales executive.
+   */
+  isSalesIntent(text: string): boolean {
+    const normalized = text
+      .trim()
+      .toLowerCase()
+      .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?!]/g, " ")
+      .replace(/\s+/g, " ");
+
+    const salesPhrases = [
+      /speak(\s+directly)?\s+(with|to)(\s+a)?\s+sales/,
+      /talk(\s+directly)?\s+(with|to)(\s+a)?\s+sales/,
+      /connect(\s+me)?\s+(with|to)(\s+a)?\s+sales/,
+      /sales\s+executive/,
+      /sales\s+team/,
+      /speak\s+with\s+human/,
+      /talk\s+to\s+human/,
+      /contact\s+sales/,
+      /call\s+me/,
+      /call\s+vikram/,
+    ];
+
+    if (salesPhrases.some((p) => p.test(normalized))) {
+      return true;
+    }
+
+    if (
+      text.includes("बिक्री कार्यकारी") ||
+      text.includes("बिक्री टीम") ||
+      text.includes("विक्रम मेहता से बात") ||
+      text.includes("सेल्स टीम से बात")
+    ) {
+      return true;
+    }
+
+    if (
+      text.includes("સેલ્સ એક્ઝિક્યુટિવ") ||
+      text.includes("સેલ્સ ટીમ") ||
+      text.includes("વિક્રમ મહેતા સાથે વાત") ||
+      text.includes("સેલ્સ ટીમ સાથે વાત")
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -607,7 +925,7 @@ export class AIConciergeService {
       /^site\s+visit$/,
       /^schedule\s+visit$/,
     ];
-    return patterns.some((p) => p.test(trimmed));
+    return patterns.some((p) => p.test(trimmed)) || this.isSiteVisitIntent(text);
   }
 
   /**
@@ -623,12 +941,8 @@ export class AIConciergeService {
       /^(૨|२)$/,
       /^(विकल्प|વિકલ્પ)\s*(2|२)$/,
       /^(दूसरा|બીજો)(\s*(विकल्प|વિકલ્પ))?$/,
-      /^speak(\s+directly)?\s+(with|to)(\s+a)?\s+sales\s+executive$/,
-      /^sales\s+executive$/,
-      /^speak\s+(with|to)\s+sales$/,
-      /^sales$/,
     ];
-    return patterns.some((p) => p.test(trimmed));
+    return patterns.some((p) => p.test(trimmed)) || this.isSalesIntent(text);
   }
 
   /**
@@ -690,25 +1004,7 @@ export class AIConciergeService {
     }
 
     const getLocalizedProject = (pName: string, lang: ConversationLanguage): string => {
-      if (
-        pName.toLowerCase().includes("prakriti") ||
-        pName.includes("प्रकृति") ||
-        pName.includes("પ્રકૃતિ")
-      ) {
-        if (lang === ConversationLanguage.HI) return "प्रकृति हाइट्स";
-        if (lang === ConversationLanguage.GU) return "પ્રકૃતિ હાઇટ્સ";
-        return "Prakriti Heights";
-      }
-      if (
-        pName.toLowerCase().includes("vaastu") ||
-        pName.includes("वास्तु") ||
-        pName.includes("વાસ્તુ")
-      ) {
-        if (lang === ConversationLanguage.HI) return "वास्तु एन्क्लेव";
-        if (lang === ConversationLanguage.GU) return "વાસ્તુ એન્ક્લેવ";
-        return "Vaastu Enclave";
-      }
-      return pName;
+      return this.getLocalizedProjectName(pName, lang);
     };
 
     if (escalationReason === EscalationReason.MISSING_PROJECT_INFO) {
@@ -963,14 +1259,60 @@ export class AIConciergeService {
     let handoffCreated = false;
     let handoffRecord: Awaited<ReturnType<typeof this.db.handoff.create>> | null = null;
 
-    // Inspect prior assistant message for multi-option offers (e.g. visit vs sales executive)
+    // Inspect prior assistant message for multi-option offers (e.g. visit vs sales executive, or project choice)
     const lastModelMessage = [...history].reverse().find((h) => h.role === "model");
     const isAmbiguousAffirmative = this.isAmbiguousAffirmative(validated.message);
     const isNumberedDisambiguation =
       Boolean(lastModelMessage) && this.isNumberedDisambiguationPrompt(lastModelMessage!.text);
+    const isProjectPromptFollowUp =
+      Boolean(lastModelMessage) && this.isProjectSelectionPrompt(lastModelMessage!.text);
 
-    const isOption1 = isNumberedDisambiguation && this.isOption1Selection(validated.message);
-    const isOption2 = isNumberedDisambiguation && this.isOption2Selection(validated.message);
+    let chosenProject: "Prakriti Heights" | "Vaastu Enclave" | null = null;
+    let isSiteVisit = false;
+
+    if (isProjectPromptFollowUp) {
+      const trimmed = validated.message.trim().toLowerCase().replace(/[.,!?:;]/g, "");
+      if (/^(1|option\s*1|first|૧|१|prakriti|sg\s*highway)$/i.test(trimmed)) {
+        chosenProject = "Prakriti Heights";
+        isSiteVisit = true;
+      } else if (/^(2|option\s*2|second|૨|२|vaastu|vastu|shela)$/i.test(trimmed)) {
+        chosenProject = "Vaastu Enclave";
+        isSiteVisit = true;
+      } else {
+        chosenProject = this.detectProject(validated.message);
+        if (chosenProject) {
+          isSiteVisit = true;
+        }
+      }
+    } else {
+      isSiteVisit =
+        (isNumberedDisambiguation && this.isOption1Selection(validated.message)) ||
+        this.isSiteVisitIntent(validated.message);
+
+      if (isSiteVisit) {
+        chosenProject = this.detectProject(validated.message);
+        if (!chosenProject && lead.project?.name) {
+          chosenProject = this.detectProject(lead.project.name);
+        }
+        if (!chosenProject) {
+          for (const h of [...history].reverse()) {
+            const p = this.detectProject(h.text);
+            if (p) {
+              chosenProject = p;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    const isSalesRequest =
+      !isProjectPromptFollowUp &&
+      ((isNumberedDisambiguation && this.isOption2Selection(validated.message)) ||
+        this.isSalesIntent(validated.message));
+
+    const isSlotPromptFollowUp =
+      Boolean(lastModelMessage) && this.isSlotOfferingPrompt(lastModelMessage!.text);
 
     const isConsecutiveAmbiguousFollowUp =
       Boolean(lastModelMessage) &&
@@ -985,33 +1327,7 @@ export class AIConciergeService {
 
     const isAmbiguousFollowUp = isFirstAmbiguousFollowUp || isConsecutiveAmbiguousFollowUp;
 
-    if (isOption1) {
-      const slots = await this.bookingService.getAvailableSlots({});
-      const slotSummary = slots.map((s) => ({
-        id: s.id,
-        startsAtIST: formatInTimeZone(s.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a 'IST'"),
-        location: s.location,
-      }));
-      if (slots.length === 0) {
-        finalAiText = this.localizeText(
-          conversation.language,
-          "No upcoming visit slots are currently available. Would you like me to connect you with our sales team?",
-          "वर्तमान में कोई आगामी विज़िट स्लॉट उपलब्ध नहीं हैं। क्या आप चाहेंगे कि मैं आपको हमारी बिक्री टीम से जोड़ूँ?",
-          "હાલમાં કોઈ આગામી મુલાકાત સ્લોટ ઉપલબ્ધ નથી. શું તમે ઈચ્છો છો કે હું તમને અમારી વેચાણ ટીમ સાથે જોડું?"
-        );
-      } else {
-        const slotsText = slotSummary
-          .slice(0, 3)
-          .map((s) => `• ${s.startsAtIST} (ID: ${s.id})`)
-          .join("\n");
-        finalAiText = this.localizeText(
-          conversation.language,
-          `Here are our upcoming available slots for your site visit:\n${slotsText}\n\nPlease let me know which time works best for you so I can confirm it!`,
-          `आपकी साइट विज़िट के लिए आगामी उपलब्ध स्लॉट यहाँ हैं:\n${slotsText}\n\nकृपया मुझे बताएं कि कौन सा समय आपके लिए सबसे अच्छा है ताकि मैं पुष्टि कर सकूँ!`,
-          `તમારી સાઇટ મુલાકાત માટે ઉપલબ્ધ સ્લોટ્સ અહીં છે:\n${slotsText}\n\nકૃપા કરીને મને જણાવો કે કયો સમય તમારા માટે શ્રેષ્ઠ છે જેથી હું તેની પુષ્ટિ કરી શકું!`
-        );
-      }
-    } else if (isOption2) {
+    if (isSalesRequest) {
       const salesExec = await this.db.user.findFirst({
         where: { role: UserRole.SALES_EXEC },
         orderBy: { createdAt: "asc" },
@@ -1024,7 +1340,7 @@ export class AIConciergeService {
           data: {
             conversationId: conversation.id,
             escalationReason: EscalationReason.BUYER_REQUESTED,
-            summary: "Buyer selected to speak with a sales executive from numbered options.",
+            summary: "Buyer requested to speak with a sales executive.",
             status: salesExec ? HandoffStatus.ASSIGNED : HandoffStatus.PENDING,
             assignedToId: salesExec?.id ?? null,
           },
@@ -1043,6 +1359,196 @@ export class AIConciergeService {
         userMessage: validated.message,
         projectName: lead.project?.name,
       });
+    } else if (isSiteVisit) {
+      if (!chosenProject) {
+        finalAiText = this.localizeText(
+          conversation.language,
+          "Certainly! We have two premier developments in Ahmedabad:\n1. Prakriti Heights (SG Highway)\n2. Vaastu Enclave (Shela)\n\nWhich project would you like to visit?",
+          "ज़रूर! अहमदाबाद में हमारे दो प्रमुख प्रोजेक्ट्स हैं:\n1. प्रकृति हाइट्स (एसजी हाईवे)\n2. वास्तु एन्क्लेव (शीला)\n\nआप किस प्रोजेक्ट को देखना चाहेंगे?",
+          "ચોક્કસ! અમદાવાદમાં અમારા બે અગ્રણી પ્રોજેક્ટ્સ છે:\n1. પ્રકૃતિ હાઇટ્સ (એસજી હાઇવે)\n2. વાસ્તુ એન્ક્લેવ (શેલા)\n\nતમે કયા પ્રોજેક્ટની મુલાકાત લેવા માંગો છો?"
+        );
+      } else {
+        const availableSlots = await this.bookingService.getAvailableSlots({
+          project: chosenProject,
+        });
+        const projectSlots = availableSlots.filter((s) => {
+          const loc = s.location.toLowerCase();
+          if (chosenProject === "Prakriti Heights") {
+            // Strictly exclude Vaastu Enclave
+            if (loc.includes("vaastu") || loc.includes("shela") || loc.includes("enclave")) return false;
+            return true;
+          } else {
+            // Strictly exclude Prakriti Heights
+            if (loc.includes("prakriti") || loc.includes("sg highway") || loc.includes("heights")) return false;
+            return true;
+          }
+        });
+
+        const slotsToDisplay = projectSlots;
+        const slotSummary = slotsToDisplay.map((s) => ({
+          id: s.id,
+          startsAtIST: formatInTimeZone(s.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a 'IST'"),
+          location: s.location,
+        }));
+
+        const localizedProject = this.getLocalizedProjectName(chosenProject, conversation.language);
+
+        if (slotSummary.length === 0) {
+          finalAiText = this.localizeText(
+            conversation.language,
+            `No upcoming visit slots are currently available for ${chosenProject}. Would you like me to connect you with our sales team?`,
+            `वर्तमान में ${localizedProject} के लिए कोई आगामी विज़िट स्लॉट उपलब्ध नहीं हैं। क्या आप चाहेंगे कि मैं आपको हमारी बिक्री टीम से जोड़ूँ?`,
+            `હાલમાં ${localizedProject} માટે કોઈ આગામી મુલાકાત સ્લોટ ઉપલબ્ધ નથી. શું તમે ઈચ્છો છો કે હું તમને અમારી વેચાણ ટીમ સાથે જોડું?`
+          );
+        } else {
+          const slotsText = slotSummary
+            .slice(0, 3)
+            .map((s) => `• ${s.startsAtIST} (ID: ${s.id})`)
+            .join("\n");
+          finalAiText = this.localizeText(
+            conversation.language,
+            `Here are our upcoming available slots for your site visit to ${chosenProject}:\n${slotsText}\n\nPlease let me know which time works best for you so I can confirm it!`,
+            `${localizedProject} की आपकी साइट विज़िट के लिए आगामी उपलब्ध स्लॉट यहाँ हैं:\n${slotsText}\n\nकृपया मुझे बताएं कि कौन सा समय आपके लिए सबसे अच्छा है ताकि मैं पुष्टि कर सकूँ!`,
+            `${localizedProject} ની તમારી સાઇટ મુલાકાત માટે ઉપલબ્ધ સ્લોટ્સ અહીં છે:\n${slotsText}\n\nકૃપા કરીને મને જણાવો કે કયો સમય તમારા માટે શ્રેષ્ઠ છે જેથી હું તેની પુષ્ટિ કરી શકું!`
+          );
+        }
+      }
+    } else if (isSlotPromptFollowUp && isAmbiguousAffirmative) {
+      finalAiText = this.localizeText(
+        conversation.language,
+        "Please select one of the available visit times above so I can confirm your booking!",
+        "कृपया ऊपर दिए गए उपलब्ध विज़िट समयों में से एक चुनें ताकि मैं आपकी बुकिंग की पुष्टि कर सकूँ!",
+        "કૃપા કરીને ઉપર દર્શાવેલ ઉપલબ્ધ મુલાકાત સમયમાંથી એક પસંદ કરો જેથી હું તમારા બુકિંગની પુષ્ટિ કરી શકું!"
+      );
+    } else if (isSlotPromptFollowUp) {
+      const activeProject =
+        this.detectProject(lastModelMessage!.text) ||
+        (lead.project?.name ? this.detectProject(lead.project.name) : null);
+
+      const availableSlots = await this.bookingService.getAvailableSlots({
+        project: activeProject || undefined,
+      });
+
+      const projectSlots = availableSlots.filter((s) => {
+        const loc = s.location.toLowerCase();
+        if (activeProject === "Prakriti Heights") {
+          if (loc.includes("vaastu") || loc.includes("shela") || loc.includes("enclave")) return false;
+          return true;
+        } else {
+          if (loc.includes("prakriti") || loc.includes("sg highway") || loc.includes("heights")) return false;
+          return true;
+        }
+      });
+
+      const matchResult = this.resolveSlotFromMessage(validated.message, projectSlots);
+
+      if (matchResult.status === "MATCH" && matchResult.slot) {
+        try {
+          const booking = await this.bookingService.bookVisit({
+            slotId: matchResult.slot.id,
+            leadId: conversation.leadId,
+          });
+
+          const istTime = formatInTimeZone(
+            booking.slot.startsAt,
+            "Asia/Kolkata",
+            "EEEE, dd MMMM yyyy 'at' hh:mm a 'IST'"
+          );
+          const projName = activeProject || this.detectProject(booking.slot.location) || "our project";
+          const localizedProject = this.getLocalizedProjectName(projName, conversation.language);
+
+          finalAiText = this.localizeText(
+            conversation.language,
+            `Your site visit to ${projName} has been confirmed for ${istTime} at ${booking.slot.location}. We look forward to welcoming you!`,
+            `${localizedProject} के लिए आपकी साइट विज़िट ${istTime} पर ${booking.slot.location} पर कन्फर्म हो गई है। हम आपका स्वागत करने के लिए तत्पर हैं!`,
+            `${localizedProject} માટે તમારી સાઇટ મુલાકાત ${istTime} વાગ્યે ${booking.slot.location} ખાતે કન્ફર્મ થઈ ગઈ છે. અમે તમારું સ્વાગત કરવા આતુર છીએ!`
+          );
+        } catch (error) {
+          if (error instanceof SlotUnavailableError) {
+            const freshSlots = await this.bookingService.getAvailableSlots({
+              project: activeProject || undefined,
+            });
+            const freshProjectSlots = freshSlots.filter((s) => {
+              const loc = s.location.toLowerCase();
+              if (activeProject === "Prakriti Heights") {
+                if (loc.includes("vaastu") || loc.includes("shela") || loc.includes("enclave")) return false;
+                return true;
+              } else {
+                if (loc.includes("prakriti") || loc.includes("sg highway") || loc.includes("heights")) return false;
+                return true;
+              }
+            });
+
+            const localizedProject = this.getLocalizedProjectName(
+              activeProject || "our project",
+              conversation.language
+            );
+
+            if (freshProjectSlots.length > 0) {
+              const freshText = freshProjectSlots
+                .slice(0, 3)
+                .map(
+                  (s) =>
+                    `• ${formatInTimeZone(s.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a 'IST'")} (ID: ${s.id})`
+                )
+                .join("\n");
+
+              finalAiText = this.localizeText(
+                conversation.language,
+                `I apologize, but that slot was just booked by another buyer. Here are our remaining available slots for ${activeProject || "our project"}:\n${freshText}\n\nPlease let me know which time works best for you!`,
+                `क्षमा करें, वह स्लॉट अभी किसी अन्य खरीदार द्वारा बुक कर लिया गया है। ${localizedProject} के लिए हमारे शेष उपलब्ध स्लॉट यहाँ हैं:\n${freshText}\n\nकृपया मुझे बताएं कि कौन सा समय आपके लिए सबसे अच्छा है!`,
+                `માફ કરશો, તે સ્લોટ હમણાં જ અન્ય ખરીદનાર દ્વારા બુક કરવામાં આવ્યો છે. ${localizedProject} માટે અમારા બાકીના ઉપલબ્ધ સ્લોટ્સ અહીં છે:\n${freshText}\n\nકૃપા કરીને મને જણાવો કે કયો સમય તમારા માટે શ્રેષ્ઠ છે!`
+              );
+            } else {
+              finalAiText = this.localizeText(
+                conversation.language,
+                `I apologize, but that slot was just booked and no further slots are currently available for ${activeProject || "our project"}. Would you like me to connect you with our sales team?`,
+                `क्षमा करें, वह स्लॉट अभी बुक हो गया है और वर्तमान में ${localizedProject} के लिए कोई अन्य स्लॉट उपलब्ध नहीं हैं। क्या आप चाहेंगे कि मैं आपको हमारी बिक्री टीम से जोड़ूँ?`,
+                `માફ કરશો, તે સ્લોટ હમણાં જ બુક થઈ ગયો છે અને હાલમાં ${localizedProject} માટે કોઈ વધારાના સ્લોટ ઉપલબ્ધ નથી. શું તમે ઈચ્છો છો કે હું તમને અમારી વેચાણ ટીમ સાથે જોડું?`
+              );
+            }
+          } else {
+            finalAiText = this.localizeText(
+              conversation.language,
+              "We encountered an issue while attempting to confirm your site visit. Please try again shortly or connect directly with our sales team.",
+              "आपकी साइट विज़िट की पुष्टि करने का प्रयास करते समय हमें एक समस्या का सामना करना पड़ा। कृपया कुछ समय बाद पुनः प्रयास करें या सीधे हमारी बिक्री टीम से संपर्क करें।",
+              "તમારી સાઇટ મુલાકાત કન્ફર્મ કરવાનો પ્રયાસ કરતી વખતે અમને એક સમસ્યા આવી. કૃપા કરીને થોડીવાર પછી ફરી પ્રયાસ કરો અથવા સીધા અમારી વેચાણ ટીમનો સંપર્ક કરો."
+            );
+          }
+        }
+      } else if (matchResult.status === "AMBIGUOUS") {
+        finalAiText = this.localizeText(
+          conversation.language,
+          "Multiple slots match your request. Please select a specific date and time or provide the slot ID from the options above.",
+          "आपके अनुरोध से कई स्लॉट मेल खाते हैं। कृपया ऊपर दिए गए विकल्पों में से एक विशिष्ट तिथि और समय चुनें या स्लॉट आईडी प्रदान करें।",
+          "તમારી વિનંતી સાથે બહુવિધ સ્લોટ્સ મેળ ખાય છે. કૃપા કરીને ઉપરના વિકલ્પોમાંથી ચોક્કસ તારીખ અને સમય પસંદ કરો અથવા સ્લોટ આઈડી પ્રદાન કરો."
+        );
+      } else {
+        const looksLikeSlotSelection =
+          /slot|id:?|cly[a-z0-9]+|option|\d|time|morning|afternoon|evening|pm|am|\d{1,2}:\d{2}|\b\d{1,2}(st|nd|rd|th)?\b/i.test(
+            validated.message
+          );
+        if (looksLikeSlotSelection && projectSlots.length > 0) {
+          const slotsText = projectSlots
+            .slice(0, 3)
+            .map(
+              (s) =>
+                `• ${formatInTimeZone(s.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a 'IST'")} (ID: ${s.id})`
+            )
+            .join("\n");
+          const localizedProject = this.getLocalizedProjectName(
+            activeProject || "our project",
+            conversation.language
+          );
+
+          finalAiText = this.localizeText(
+            conversation.language,
+            `That slot is not available for ${activeProject || "our project"}. Please select one of the following available slots:\n${slotsText}\n\nWhich time works best for you?`,
+            `वह स्लॉट ${localizedProject} के लिए उपलब्ध नहीं है। कृपया निम्नलिखित उपलब्ध स्लॉट में से एक चुनें:\n${slotsText}\n\nकौन सा समय आपके लिए सबसे अच्छा है?`,
+            `તે સ્લોટ ${localizedProject} માટે ઉપલબ્ધ નથી. કૃપા કરીને નીચેના ઉપલબ્ધ સ્લોટ્સમાંથી એક પસંદ કરો:\n${slotsText}\n\nકયો સમય તમારા માટે શ્રેષ્ઠ છે?`
+          );
+        }
+      }
     } else if (isConsecutiveAmbiguousFollowUp) {
       finalAiText = this.localizeText(
         conversation.language,
@@ -1139,12 +1645,29 @@ export class AIConciergeService {
             });
           } else if (toolCall.name === "checkSlotAvailability") {
             const toolInput = checkSlotAvailabilityToolSchema.parse(toolCall.args);
+            const contextText = `${history.map((h) => h.text).join(" ")} ${validated.message}`;
+            const detectedProj = toolInput.project || this.detectProject(contextText);
             const slots = await this.bookingService.getAvailableSlots({
               from: toolInput.startDate ? new Date(toolInput.startDate) : undefined,
               to: toolInput.endDate ? new Date(toolInput.endDate) : undefined,
+              project: detectedProj || undefined,
             });
 
-            const slotSummary = slots.map((s) => ({
+            // Strict project isolation if a project is targeted
+            const filteredSlots = detectedProj
+              ? slots.filter((s) => {
+                  const loc = s.location.toLowerCase();
+                  if (detectedProj === "Prakriti Heights") {
+                    if (loc.includes("vaastu") || loc.includes("shela") || loc.includes("enclave")) return false;
+                    return true;
+                  } else {
+                    if (loc.includes("prakriti") || loc.includes("sg highway") || loc.includes("heights")) return false;
+                    return true;
+                  }
+                })
+              : slots;
+
+            const slotSummary = filteredSlots.map((s) => ({
               id: s.id,
               startsAtIST: formatInTimeZone(s.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a 'IST'"),
               location: s.location,
@@ -1159,21 +1682,23 @@ export class AIConciergeService {
             });
 
             if (!finalAiText) {
-              if (slots.length === 0) {
+              if (filteredSlots.length === 0) {
+                const projLabel = detectedProj ? ` for ${detectedProj}` : "";
                 finalAiText = this.localizeText(
                   conversation.language,
-                  "No upcoming visit slots are currently available. Would you like me to connect you with our sales team?",
-                  "वर्तमान में कोई आगामी विज़िट स्लॉट उपलब्ध नहीं हैं। क्या आप चाहेंगे कि मैं आपको हमारी बिक्री टीम से जोड़ूँ?",
-                  "હાલમાં કોઈ આગામી મુલાકાત સ્લોટ ઉપલબ્ધ નથી. શું તમે ઈચ્છો છો કે હું તમને અમારી વેચાણ ટીમ સાથે જોડું?"
+                  `No upcoming visit slots are currently available${projLabel}. Would you like me to connect you with our sales team?`,
+                  `वर्तमान में कोई आगामी विज़िट स्लॉट उपलब्ध नहीं हैं। क्या आप चाहेंगे कि मैं आपको हमारी बिक्री टीम से जोड़ूँ?`,
+                  `હાલમાં કોઈ આગામી મુલાકાત સ્લોટ ઉપલબ્ધ નથી. શું તમે ઈચ્છો છો કે હું તમને અમારી વેચાણ ટીમ સાથે જોડું?`
                 );
               } else {
                 const slotsText = slotSummary
                   .slice(0, 3)
                   .map((s) => `• ${s.startsAtIST} (ID: ${s.id})`)
                   .join("\n");
+                const targetProj = detectedProj ? ` to ${detectedProj}` : "";
                 finalAiText = this.localizeText(
                   conversation.language,
-                  `Here are our upcoming available slots for your site visit:\n${slotsText}\n\nPlease let me know which time works best for you so I can confirm it!`,
+                  `Here are our upcoming available slots for your site visit${targetProj}:\n${slotsText}\n\nPlease let me know which time works best for you so I can confirm it!`,
                   `आपकी साइट विज़िट के लिए आगामी उपलब्ध स्लॉट यहाँ हैं:\n${slotsText}\n\nकृपया मुझे बताएं कि कौन सा समय आपके लिए सबसे अच्छा है ताकि मैं पुष्टि कर सकूँ!`,
                   `તમારી સાઇટ મુલાકાત માટે ઉપલબ્ધ સ્લોટ્સ અહીં છે:\n${slotsText}\n\nકૃપા કરીને મને જણાવો કે કયો સમય તમારા માટે શ્રેષ્ઠ છે જેથી હું તેની પુષ્ટિ કરી શકું!`
                 );
@@ -1191,59 +1716,119 @@ export class AIConciergeService {
               );
               shouldStopEarly = true;
             } else {
-              const booking = await this.bookingService.bookVisit({
-                slotId: toolInput.slotId,
-                leadId: conversation.leadId,
-              });
+              try {
+                const booking = await this.bookingService.bookVisit({
+                  slotId: toolInput.slotId,
+                  leadId: conversation.leadId,
+                });
 
-              const istTime = formatInTimeZone(booking.slot.startsAt, "Asia/Kolkata", "EEEE, dd MMMM yyyy 'at' hh:mm a 'IST'");
-              finalAiText = this.localizeText(
-                conversation.language,
-                `Your site visit has been confirmed for ${istTime} at ${booking.slot.location}. We look forward to welcoming you!`,
-                `आपकी साइट विज़िट ${istTime} पर ${booking.slot.location} पर कन्फर्म हो गई है। हम आपका स्वागत करने के लिए तत्पर हैं!`,
-                `તમારી સાઇટ મુલાકાત ${istTime} વાગ્યે ${booking.slot.location} ખાતે કન્ફર્મ થઈ ગઈ છે. અમે તમારું સ્વાગત કરવા આતુર છીએ!`
-              );
-              shouldStopEarly = true;
+                const istTime = formatInTimeZone(
+                  booking.slot.startsAt,
+                  "Asia/Kolkata",
+                  "EEEE, dd MMMM yyyy 'at' hh:mm a 'IST'"
+                );
+                const projName = this.detectProject(booking.slot.location) || lead.project?.name || "our project";
+                const localizedProject = this.getLocalizedProjectName(projName, conversation.language);
+
+                finalAiText = this.localizeText(
+                  conversation.language,
+                  `Your site visit to ${projName} has been confirmed for ${istTime} at ${booking.slot.location}. We look forward to welcoming you!`,
+                  `${localizedProject} के लिए आपकी साइट विज़िट ${istTime} पर ${booking.slot.location} पर कन्फर्म हो गई है। हम आपका स्वागत करने के लिए तत्पर हैं!`,
+                  `${localizedProject} માટે તમારી સાઇટ મુલાકાત ${istTime} વાગ્યે ${booking.slot.location} ખાતે કન્ફર્મ થઈ ગઈ છે. અમે તમારું સ્વાગત કરવા આતુર છીએ!`
+                );
+                shouldStopEarly = true;
+              } catch (error) {
+                if (error instanceof SlotUnavailableError) {
+                  const projName = lead.project?.name || "our project";
+                  const freshSlots = await this.bookingService.getAvailableSlots({
+                    project: lead.project?.name || undefined,
+                  });
+                  const localizedProject = this.getLocalizedProjectName(projName, conversation.language);
+
+                  if (freshSlots.length > 0) {
+                    const freshText = freshSlots
+                      .slice(0, 3)
+                      .map(
+                        (s) =>
+                          `• ${formatInTimeZone(s.startsAt, "Asia/Kolkata", "dd MMM yyyy, hh:mm a 'IST'")} (ID: ${s.id})`
+                      )
+                      .join("\n");
+
+                    finalAiText = this.localizeText(
+                      conversation.language,
+                      `I apologize, but that slot was just booked by another buyer. Here are our remaining available slots for ${projName}:\n${freshText}\n\nPlease let me know which time works best for you!`,
+                      `क्षमा करें, वह स्लॉट अभी किसी अन्य खरीदार द्वारा बुक कर लिया गया है। ${localizedProject} के लिए हमारे शेष उपलब्ध स्लॉट यहाँ हैं:\n${freshText}\n\nकृपया मुझे बताएं कि कौन सा समय आपके लिए सबसे अच्छा है!`,
+                      `માફ કરશો, તે સ્લોટ હમણાં જ અન્ય ખરીદનાર દ્વારા બુક કરવામાં આવ્યો છે. ${localizedProject} માટે અમારા બાકીના ઉપલબ્ધ સ્લોટ્સ અહીં છે:\n${freshText}\n\nકૃપા કરીને મને જણાવો કે કયો સમય તમારા માટે શ્રેષ્ઠ છે!`
+                    );
+                  } else {
+                    finalAiText = this.localizeText(
+                      conversation.language,
+                      `I apologize, but that slot was just booked and no further slots are currently available for ${projName}. Would you like me to connect you with our sales team?`,
+                      `क्षमा करें, वह स्लॉट अभी बुक हो गया है और वर्तमान में ${localizedProject} के लिए कोई अन्य स्लॉट उपलब्ध नहीं हैं। क्या आप चाहेंगे कि मैं आपको हमारी बिक्री टीम से जोड़ूँ?`,
+                      `માફ કરશો, તે સ્લોટ હમણાં જ બુક થઈ ગયો છે અને હાલમાં ${localizedProject} માટે કોઈ વધારાના સ્લોટ ઉપલબ્ધ નથી. શું તમે ઈચ્છો છો કે હું તમને અમારી વેચાણ ટીમ સાથે જોડું?`
+                    );
+                  }
+                  shouldStopEarly = true;
+                } else {
+                  finalAiText = this.localizeText(
+                    conversation.language,
+                    "We encountered an issue while attempting to confirm your site visit. Please try again shortly or connect directly with our sales team.",
+                    "आपकी साइट विज़िट की पुष्टि करने का प्रयास करते समय हमें एक समस्या का सामना करना पड़ा। कृपया कुछ समय बाद पुनः प्रयास करें या सीधे हमारी बिक्री टीम से संपर्क करें।",
+                    "તમારી સાઇટ મુલાકાત કન્ફર્મ કરવાનો પ્રયાસ કરતી વખતે અમને એક સમસ્યા આવી. કૃપા કરીને થોડીવાર પછી ફરી પ્રયાસ કરો અથવા સીધા અમારી વેચાણ ટીમનો સંપર્ક કરો."
+                  );
+                  shouldStopEarly = true;
+                }
+              }
             }
           } else if (toolCall.name === "handoffToExecutive") {
             const toolInput = handoffToExecutiveToolSchema.parse(toolCall.args);
 
-            const salesExec = await this.db.user.findFirst({
-              where: { role: UserRole.SALES_EXEC },
-              orderBy: { createdAt: "asc" },
-            });
-
-            const existingHandoff = await this.db.handoff.findUnique({
-              where: { conversationId: conversation.id },
-            });
-
-            if (!existingHandoff) {
-              handoffRecord = await this.db.handoff.create({
-                data: {
-                  conversationId: conversation.id,
-                  escalationReason: toolInput.escalationReason,
-                  summary: toolInput.summary,
-                  status: salesExec ? HandoffStatus.ASSIGNED : HandoffStatus.PENDING,
-                  assignedToId: salesExec?.id ?? null,
-                },
-                include: { assignedTo: true },
-              });
+            if (toolInput.escalationReason === "MISSING_PROJECT_INFO" && this.isSiteVisitIntent(validated.message)) {
+              finalAiText = this.localizeText(
+                conversation.language,
+                "Certainly! We have two premier developments in Ahmedabad:\n1. Prakriti Heights (SG Highway)\n2. Vaastu Enclave (Shela)\n\nWhich project would you like to visit?",
+                "ज़रूर! अहमदाबाद में हमारे दो प्रमुख प्रोजेक्ट्स हैं:\n1. प्रकृति हाइट्स (एसजी हाईवे)\n2. वास्तु एन्क्लेव (शीला)\n\nआप किस प्रोजेक्ट को देखना चाहेंगे?",
+                "ચોક્કસ! અમદાવાદમાં અમારા બે અગ્રણી પ્રોજેક્ટ્સ છે:\n1. પ્રકૃતિ હાઇટ્સ (એસજી હાઇવે)\n2. વાસ્તુ એન્ક્લેવ (શેલા)\n\nતમે કયા પ્રોજેક્ટની મુલાકાત લેવા માંગો છો?"
+              );
+              shouldStopEarly = true;
             } else {
-              handoffRecord = existingHandoff;
+              const salesExec = await this.db.user.findFirst({
+                where: { role: UserRole.SALES_EXEC },
+                orderBy: { createdAt: "asc" },
+              });
+
+              const existingHandoff = await this.db.handoff.findUnique({
+                where: { conversationId: conversation.id },
+              });
+
+              if (!existingHandoff) {
+                handoffRecord = await this.db.handoff.create({
+                  data: {
+                    conversationId: conversation.id,
+                    escalationReason: toolInput.escalationReason,
+                    summary: toolInput.summary,
+                    status: salesExec ? HandoffStatus.ASSIGNED : HandoffStatus.PENDING,
+                    assignedToId: salesExec?.id ?? null,
+                  },
+                  include: { assignedTo: true },
+                });
+              } else {
+                handoffRecord = existingHandoff;
+              }
+
+              handoffCreated = true;
+              const execName = salesExec?.name || "Vikram Mehta";
+
+              finalAiText = this.buildHandoffExplanationMessage({
+                language: conversation.language,
+                execName,
+                escalationReason: toolInput.escalationReason,
+                summary: toolInput.summary,
+                userMessage: validated.message,
+                projectName: lead.project?.name,
+              });
+              shouldStopEarly = true;
             }
-
-            handoffCreated = true;
-            const execName = salesExec?.name || "Vikram Mehta";
-
-            finalAiText = this.buildHandoffExplanationMessage({
-              language: conversation.language,
-              execName,
-              escalationReason: toolInput.escalationReason,
-              summary: toolInput.summary,
-              userMessage: validated.message,
-              projectName: lead.project?.name,
-            });
-            shouldStopEarly = true;
           }
         }
 
@@ -1379,8 +1964,8 @@ export class AIConciergeService {
     // Sanitize potential duplicate RERA notices in generated AI text
     finalAiText = this.sanitizeReraNotice(finalAiText);
 
-    // Pure clarifications, greetings, and disambiguation prompts must NOT carry the statutory RERA demo disclaimer
-    if (isAmbiguousFollowUp || isOption1 || isOption2 || turnGroundingFactIds.size === 0) {
+    // Pure clarifications, greetings, disambiguation prompts, and site visit scheduling must NOT carry the statutory RERA demo disclaimer
+    if (isAmbiguousFollowUp || isSiteVisit || isSalesRequest || turnGroundingFactIds.size === 0) {
       finalAiText = this.stripReraNotice(finalAiText);
     }
 
@@ -1400,7 +1985,7 @@ export class AIConciergeService {
     // - Partial handoff with cited facts: only fact IDs whose value is actually cited in finalAiText
     // - Genuine factual answer: all turnGroundingFactIds
     let persistedGroundingFactIds: string[];
-    if (isInitialOpening || isAmbiguousFollowUp || isOption1 || isOption2 || turnGroundingFactIds.size === 0) {
+    if (isInitialOpening || isAmbiguousFollowUp || isSiteVisit || isSalesRequest || turnGroundingFactIds.size === 0) {
       persistedGroundingFactIds = [];
     } else if (handoffCreated) {
       const citedFactIds = allRetrievedFacts

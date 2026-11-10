@@ -22,9 +22,12 @@
  * - Asynchronous disconnect completed via process.exitCode = 1 in catch handler
  */
 
-import "dotenv/config";
+import dotenv from "dotenv";
+dotenv.config({ path: ".env.local" });
+dotenv.config();
 import { hash } from "@node-rs/argon2";
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient, Prisma } from "@prisma/client";
+import { formatInTimeZone } from "date-fns-tz";
 import {
   UserRole,
   FactSheetScope,
@@ -42,23 +45,194 @@ import {
 } from "../src/types";
 import { assertSeedSafety } from "../src/lib/seed-guard";
 
+export interface SlotDefinition {
+  startsAt: Date;
+  endsAt: Date;
+  location: string;
+}
+
+/**
+ * Generates an array of upcoming date strings (YYYY-MM-DD) in Asia/Kolkata timezone
+ * starting from tomorrow relative to the given reference date.
+ */
+export function generateUpcomingSlotDates(daysCount = 7, fromDate = new Date()): string[] {
+  const dates: string[] = [];
+  const istDateString = formatInTimeZone(fromDate, "Asia/Kolkata", "yyyy-MM-dd");
+  const [year, month, day] = istDateString.split("-").map(Number);
+
+  for (let i = 1; i <= daysCount; i++) {
+    const targetDate = new Date(Date.UTC(year, month - 1, day + i));
+    const targetStr = targetDate.toISOString().split("T")[0];
+    dates.push(targetStr);
+  }
+  return dates;
+}
+
+/**
+ * Generates dynamic future visit slots for BOTH projects:
+ * 1. Prakriti Heights: "Prakriti Heights Experience Gallery, SG Highway, Ahmedabad"
+ *    - Morning: 10:00 AM - 11:00 AM IST (04:30 - 05:30 UTC)
+ *    - Afternoon: 02:30 PM - 03:30 PM IST (09:00 - 10:00 UTC)
+ * 2. Vaastu Enclave: "Vaastu Enclave Site Office, Shela, Ahmedabad"
+ *    - Morning: 11:30 AM - 12:30 PM IST (06:00 - 07:00 UTC)
+ *    - Afternoon: 04:00 PM - 05:00 PM IST (10:30 - 11:30 UTC)
+ */
+export function generateUpcomingSlots(daysCount = 7, fromDate = new Date()): SlotDefinition[] {
+  const dates = generateUpcomingSlotDates(daysCount, fromDate);
+  const slots: SlotDefinition[] = [];
+
+  for (const dateStr of dates) {
+    // 1. Prakriti Heights (SG Highway)
+    slots.push({
+      startsAt: new Date(`${dateStr}T04:30:00.000Z`),
+      endsAt: new Date(`${dateStr}T05:30:00.000Z`),
+      location: "Prakriti Heights Experience Gallery, SG Highway, Ahmedabad",
+    });
+    slots.push({
+      startsAt: new Date(`${dateStr}T09:00:00.000Z`),
+      endsAt: new Date(`${dateStr}T10:00:00.000Z`),
+      location: "Prakriti Heights Experience Gallery, SG Highway, Ahmedabad",
+    });
+
+    // 2. Vaastu Enclave (Shela)
+    slots.push({
+      startsAt: new Date(`${dateStr}T06:00:00.000Z`),
+      endsAt: new Date(`${dateStr}T07:00:00.000Z`),
+      location: "Vaastu Enclave Site Office, Shela, Ahmedabad",
+    });
+    slots.push({
+      startsAt: new Date(`${dateStr}T10:30:00.000Z`),
+      endsAt: new Date(`${dateStr}T11:30:00.000Z`),
+      location: "Vaastu Enclave Site Office, Shela, Ahmedabad",
+    });
+  }
+
+  return slots;
+}
+
+/**
+ * Seeds upcoming slots idempotently. Never deletes or mutates existing BOOKED slots.
+ * Never creates duplicate slots for matching startsAt and location.
+ */
+export async function seedUpcomingSlots(
+  tx: Prisma.TransactionClient,
+  daysCount = 7,
+  fromDate = new Date()
+): Promise<{ created: number; skipped: number }> {
+  const slotDefs = generateUpcomingSlots(daysCount, fromDate);
+  let created = 0;
+  let skipped = 0;
+
+  for (const def of slotDefs) {
+    const existing = await tx.visitSlot.findFirst({
+      where: {
+        startsAt: def.startsAt,
+        location: def.location,
+      },
+    });
+
+    if (existing) {
+      skipped++;
+      continue;
+    }
+
+    await tx.visitSlot.create({
+      data: {
+        startsAt: def.startsAt,
+        endsAt: def.endsAt,
+        status: VisitSlotStatus.AVAILABLE,
+        location: def.location,
+      },
+    });
+    created++;
+  }
+
+  return { created, skipped };
+}
+
 let prisma: PrismaClient | null = null;
 
 async function runSeed() {
   console.log("🌱 ENQUIVO Date-Aware Database Seed Protocol");
   console.log("📅 Reference Date: 2026-11-03T12:00:00.000Z (Nov 3, 2026)");
 
+  const isDestructive = process.env.ALLOW_DESTRUCTIVE_SEED === "true";
+
   // 1. Safety Guard Check: Environment, Explicit Authorization, and Endpoint Allowlist
   // These checks execute strictly before any database connection or query can occur.
-  assertSeedSafety();
+  assertSeedSafety(undefined, { isDestructive });
 
   // 2. Initialize Prisma Client only AFTER safety guards have passed
-  const prismaModule = await import("../src/lib/prisma");
-  prisma = prismaModule.prisma;
+  // Prefer DIRECT_URL for migrations and long interactive seed transactions to avoid pooler disconnects
+  const { PrismaClient } = await import("@prisma/client");
+  const { PrismaPg } = await import("@prisma/adapter-pg");
+  const connectionString = process.env.DIRECT_URL || process.env.DATABASE_URL!;
+  const adapter = new PrismaPg(connectionString);
+  prisma = new PrismaClient({ adapter });
 
   // 3. Execute Teardown and Seeding inside an Atomic Interactive Transaction
   await prisma.$transaction(
     async (tx) => {
+      if (!isDestructive) {
+        console.log("🛡️ [Transaction] Non-destructive mode: Preserving existing tables & booking history...");
+
+        // Ensure Users exist
+        const salesHeadHash = await hash(process.env.SEED_SALES_HEAD_PASSWORD || "DemoEval#Head2026!");
+        const salesExec1Hash = await hash(process.env.SEED_SALES_EXEC1_PASSWORD || "DemoEval#ExecVikram2026!");
+        const salesExec2Hash = await hash(process.env.SEED_SALES_EXEC2_PASSWORD || "DemoEval#ExecPriya2026!");
+        const buyerHash = await hash(process.env.SEED_BUYER_PASSWORD || "DemoEval#BuyerHardik2026!");
+
+        await tx.user.upsert({
+          where: { email: "sales-head@enquivo.in" },
+          update: {},
+          create: { email: "sales-head@enquivo.in", name: "Aarav Sharma", passwordHash: salesHeadHash, role: UserRole.SALES_HEAD },
+        });
+        await tx.user.upsert({
+          where: { email: "vikram.mehta@enquivo.in" },
+          update: {},
+          create: { email: "vikram.mehta@enquivo.in", name: "Vikram Mehta", passwordHash: salesExec1Hash, role: UserRole.SALES_EXEC },
+        });
+        await tx.user.upsert({
+          where: { email: "priya.desai@enquivo.in" },
+          update: {},
+          create: { email: "priya.desai@enquivo.in", name: "Priya Desai", passwordHash: salesExec2Hash, role: UserRole.SALES_EXEC },
+        });
+        await tx.user.upsert({
+          where: { email: "hardik.patel@example.com" },
+          update: {},
+          create: { email: "hardik.patel@example.com", name: "Hardik Patel", passwordHash: buyerHash, role: UserRole.BUYER },
+        });
+
+        // Ensure Projects exist
+        let project1 = await tx.project.findFirst({ where: { name: "Prakriti Heights" } });
+        if (!project1) {
+          project1 = await tx.project.create({
+            data: {
+              name: "Prakriti Heights",
+              location: "SG Highway, Ahmedabad",
+              reraNumber: "DEMO-ONLY-NOT-VERIFIED",
+              totalUnits: 210,
+            },
+          });
+        }
+        let project2 = await tx.project.findFirst({ where: { name: "Vaastu Enclave" } });
+        if (!project2) {
+          project2 = await tx.project.create({
+            data: {
+              name: "Vaastu Enclave",
+              location: "Shela, Ahmedabad",
+              reraNumber: "DEMO-ONLY-NOT-VERIFIED",
+              totalUnits: 210,
+            },
+          });
+        }
+
+        // Seed dynamic upcoming slots (strictly preserves existing slots and bookings)
+        const slotStats = await seedUpcomingSlots(tx, 7, new Date());
+        console.log(`🗓️ [Transaction] Dynamic slots synced: ${slotStats.created} created, ${slotStats.skipped} preserved.`);
+        return;
+      }
+
       // Step A: Clean existing records in reverse dependency order using transaction client (tx)
       console.log("🧹 [Transaction] Cleaning existing records in reverse dependency order...");
       await tx.sourceSpend.deleteMany();
@@ -448,7 +622,7 @@ async function runSeed() {
           startsAt: new Date("2026-11-01T05:30:00.000Z"),
           endsAt: new Date("2026-11-01T06:30:00.000Z"),
           status: VisitSlotStatus.BOOKED,
-          location: "Prakriti Heights Experience Gallery, Ahmedabad",
+          location: "Prakriti Heights Experience Gallery, SG Highway, Ahmedabad",
         },
       });
 
@@ -461,33 +635,8 @@ async function runSeed() {
         },
       });
 
-      const futureSlotDates = [
-        "2026-11-04",
-        "2026-11-05",
-        "2026-11-06",
-        "2026-11-07",
-        "2026-11-08",
-      ];
-
-      for (const dateStr of futureSlotDates) {
-        await tx.visitSlot.create({
-          data: {
-            startsAt: new Date(`${dateStr}T04:30:00.000Z`),
-            endsAt: new Date(`${dateStr}T05:30:00.000Z`),
-            status: VisitSlotStatus.AVAILABLE,
-            location: "Enquivo Sales Gallery, SG Highway, Ahmedabad",
-          },
-        });
-
-        await tx.visitSlot.create({
-          data: {
-            startsAt: new Date(`${dateStr}T08:30:00.000Z`),
-            endsAt: new Date(`${dateStr}T09:30:00.000Z`),
-            status: VisitSlotStatus.AVAILABLE,
-            location: "Enquivo Sales Gallery, SG Highway, Ahmedabad",
-          },
-        });
-      }
+      const slotStats = await seedUpcomingSlots(tx, 7, new Date());
+      console.log(`🗓️ [Transaction] Dynamic slots seeded: ${slotStats.created} created, ${slotStats.skipped} skipped.`);
 
       // Step J: Seed SiteVisits
       console.log("📍 [Transaction] Seeding Historical SiteVisits...");
@@ -603,13 +752,15 @@ async function runSeed() {
   console.log("✅ Database seed transaction committed successfully!");
 }
 
-runSeed()
-  .catch((e) => {
-    console.error("❌ Seed transaction failed and was rolled back with error:", e);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    if (prisma) {
-      await prisma.$disconnect();
-    }
-  });
+if (process.env.NODE_ENV !== "test") {
+  runSeed()
+    .catch((e) => {
+      console.error("❌ Seed transaction failed and was rolled back with error:", e);
+      process.exitCode = 1;
+    })
+    .finally(async () => {
+      if (prisma) {
+        await prisma.$disconnect();
+      }
+    });
+}

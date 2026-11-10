@@ -103,6 +103,7 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
     language?: ConversationLanguage;
     persistedUserMessage?: unknown;
     previousMessages?: unknown[];
+    project?: { id?: string; name: string } | null;
   } = {}) {
     const currentLang = options.language ?? ConversationLanguage.EN;
 
@@ -115,8 +116,8 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
           lead: {
             id: "lead-202",
             name: "Hardik Patel",
-            projectId: null,
-            project: null,
+            projectId: options.project ? options.project.id ?? "proj-1" : null,
+            project: options.project ?? null,
             consentRecord: {
               optedOut: false,
               consentedAt: new Date(),
@@ -924,7 +925,7 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDb = createMockPrisma({ previousMessages });
+    const mockDb = createMockPrisma({ previousMessages, project: { name: "Prakriti Heights" } });
     const mockBookingService = {} as unknown as BookingService;
     const mockGeminiClient: GeminiClientInterface = {
       generate: vi.fn().mockResolvedValue({
@@ -968,7 +969,7 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDb = createMockPrisma({ previousMessages });
+    const mockDb = createMockPrisma({ previousMessages, project: { name: "Prakriti Heights" } });
     const bookVisitSpy = vi.fn();
     const mockBookingService = { bookVisit: bookVisitSpy } as unknown as BookingService;
     const mockGeminiClient: GeminiClientInterface = {
@@ -1015,7 +1016,7 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDb = createMockPrisma({ previousMessages });
+    const mockDb = createMockPrisma({ previousMessages, project: { name: "Prakriti Heights" } });
     const mockBookingService = {} as unknown as BookingService;
     const mockGeminiClient: GeminiClientInterface = {
       generate: vi.fn().mockResolvedValue({
@@ -1068,7 +1069,7 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDb = createMockPrisma({ previousMessages });
+    const mockDb = createMockPrisma({ previousMessages, project: { name: "Prakriti Heights" } });
     const getAvailableSlotsSpy = vi.fn().mockResolvedValue([
       {
         id: "slot-1",
@@ -1125,7 +1126,7 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDb = createMockPrisma({ previousMessages });
+    const mockDb = createMockPrisma({ previousMessages, project: { name: "Prakriti Heights" } });
     const mockBookingService = {} as unknown as BookingService;
     const mockGeminiClient: GeminiClientInterface = {
       generate: vi.fn().mockResolvedValue({
@@ -1186,7 +1187,7 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDb = createMockPrisma({ previousMessages });
+    const mockDb = createMockPrisma({ previousMessages, project: { name: "Prakriti Heights" } });
     const bookVisitSpy = vi.fn();
     const mockBookingService = { bookVisit: bookVisitSpy } as unknown as BookingService;
     const mockGeminiClient: GeminiClientInterface = {
@@ -1234,7 +1235,11 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDbHI = createMockPrisma({ previousMessages: previousMessagesHI, language: ConversationLanguage.HI });
+    const mockDbHI = createMockPrisma({
+      previousMessages: previousMessagesHI,
+      language: ConversationLanguage.HI,
+      project: { name: "Prakriti Heights" },
+    });
     const mockBookingService = {} as unknown as BookingService;
     const mockGeminiClient: GeminiClientInterface = { generate: vi.fn() };
 
@@ -1276,7 +1281,11 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDbGU = createMockPrisma({ previousMessages: previousMessagesGU, language: ConversationLanguage.GU });
+    const mockDbGU = createMockPrisma({
+      previousMessages: previousMessagesGU,
+      language: ConversationLanguage.GU,
+      project: { name: "Prakriti Heights" },
+    });
     const aiServiceGU = new AIConciergeService(
       mockDbGU as unknown as PrismaClient,
       mockBookingService,
@@ -1385,7 +1394,7 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDb = createMockPrisma({ previousMessages });
+    const mockDb = createMockPrisma({ previousMessages, project: { name: "Prakriti Heights" } });
     const mockBookVisit = vi.fn();
     const mockBookingService = {
       getAvailableSlots: vi.fn().mockResolvedValue([
@@ -1457,7 +1466,7 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDb = createMockPrisma({ previousMessages });
+    const mockDb = createMockPrisma({ previousMessages, project: { name: "Prakriti Heights" } });
     const mockBookingService = {} as unknown as BookingService;
     const mockGeminiClient: GeminiClientInterface = { generate: vi.fn() };
 
@@ -1513,7 +1522,7 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDb = createMockPrisma({ previousMessages });
+    const mockDb = createMockPrisma({ previousMessages, project: { name: "Prakriti Heights" } });
     const mockBookingService = { getAvailableSlots: vi.fn() } as unknown as BookingService;
 
     const mockGeminiClient: GeminiClientInterface = {
@@ -1574,7 +1583,11 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDbHI = createMockPrisma({ previousMessages: previousMessagesHI, language: ConversationLanguage.HI });
+    const mockDbHI = createMockPrisma({
+      previousMessages: previousMessagesHI,
+      language: ConversationLanguage.HI,
+      project: { name: "Prakriti Heights" },
+    });
     const mockBookingServiceHI = {
       getAvailableSlots: vi.fn().mockResolvedValue([
         {
@@ -1636,7 +1649,11 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
       },
     ];
 
-    const mockDbGU = createMockPrisma({ previousMessages: previousMessagesGU, language: ConversationLanguage.GU });
+    const mockDbGU = createMockPrisma({
+      previousMessages: previousMessagesGU,
+      language: ConversationLanguage.GU,
+      project: { name: "Prakriti Heights" },
+    });
     const mockBookingServiceGU = {
       getAvailableSlots: vi.fn().mockResolvedValue([
         {
@@ -1678,5 +1695,276 @@ describe("AI Concierge Multi-Turn Tool Execution & Grounding (Unit Tests)", () =
     expect(resultGU2.handoffCreated).toBe(true);
     expect(resultGU2.aiMessage.content).toContain("Vikram Mehta");
     expect(resultGU2.aiMessage.content).toContain("તમારી વિનંતી અનુસાર મેં તમને સીધા Vikram Mehta સાથે જોડ્યા છે.");
+  });
+
+  it("AB. Reproduction: Buyer replies 'yes I like to schedule a visit' -> asks which project to visit, does NOT create handoff or booking", async () => {
+    const previousMessages = [
+      {
+        id: "msg-1",
+        conversationId: "conv-101",
+        role: ChatMessageRole.USER,
+        content: "What are the prices and configurations?",
+        createdAt: new Date(Date.now() - 40000),
+      },
+      {
+        id: "msg-2",
+        conversationId: "conv-101",
+        role: ChatMessageRole.AI,
+        content:
+          "Would you like to schedule a site visit or speak with a sales executive?",
+        createdAt: new Date(Date.now() - 20000),
+      },
+    ];
+
+    const mockDb = createMockPrisma({ previousMessages });
+    const mockBookingService = {
+      getAvailableSlots: vi.fn(),
+      bookVisit: vi.fn(),
+    } as unknown as BookingService;
+
+    const mockGeminiClient: GeminiClientInterface = {
+      generate: vi.fn().mockResolvedValue({
+        text: undefined,
+        toolCalls: [
+          {
+            name: "handoffToExecutive",
+            args: {
+              escalationReason: "MISSING_PROJECT_INFO",
+              summary: "Buyer asked to schedule a visit but project was not specified",
+            },
+          },
+        ],
+      }),
+    };
+
+    const aiService = new AIConciergeService(
+      mockDb as unknown as PrismaClient,
+      mockBookingService,
+      mockGeminiClient,
+      true
+    );
+
+    const result = await aiService.sendMessage({
+      conversationId: "conv-101",
+      message: "yes I like to schedule a visit",
+    });
+
+    // 1. Must NOT create a handoff
+    expect(result.handoffCreated).toBe(false);
+    expect(result.handoff).toBeNull();
+
+    // 2. Must NOT create a booking
+    expect(mockBookingService.bookVisit).not.toHaveBeenCalled();
+
+    // 3. Must NOT have grounding facts
+    expect(result.groundingFactIds).toEqual([]);
+
+    // 4. Must ask which project to visit (Prakriti Heights vs Vaastu Enclave)
+    expect(result.aiMessage.content).toContain("Prakriti Heights (SG Highway)");
+    expect(result.aiMessage.content).toContain("Vaastu Enclave (Shela)");
+    expect(result.aiMessage.content).toContain("Which project would you like to visit?");
+
+    // 5. Must NOT show missing info escalation error
+    expect(result.aiMessage.content).not.toContain("Specific details for this project are not available");
+    expect(result.aiMessage.content).not.toContain("Vikram Mehta");
+  });
+
+  it("AC. Buyer replies '1' or 'Prakriti Heights' to project prompt -> displays slots for Prakriti Heights; '2' displays Vaastu Enclave", async () => {
+    const previousMessages = [
+      {
+        id: "msg-1",
+        conversationId: "conv-101",
+        role: ChatMessageRole.USER,
+        content: "yes I like to schedule a visit",
+        createdAt: new Date(Date.now() - 40000),
+      },
+      {
+        id: "msg-2",
+        conversationId: "conv-101",
+        role: ChatMessageRole.AI,
+        content:
+          "Certainly! We have two premier developments in Ahmedabad:\n1. Prakriti Heights (SG Highway)\n2. Vaastu Enclave (Shela)\n\nWhich project would you like to visit?",
+        createdAt: new Date(Date.now() - 20000),
+      },
+    ];
+
+    const mockDb = createMockPrisma({ previousMessages });
+    const mockBookingService = {
+      getAvailableSlots: vi.fn().mockResolvedValue([
+        {
+          id: "slot-ph-1",
+          startsAt: new Date("2026-11-15T10:00:00Z"),
+          endsAt: new Date("2026-11-15T11:00:00Z"),
+          status: "AVAILABLE",
+          location: "Prakriti Heights Experience Gallery, Ahmedabad",
+        },
+        {
+          id: "slot-ve-1",
+          startsAt: new Date("2026-11-15T14:00:00Z"),
+          endsAt: new Date("2026-11-15T15:00:00Z"),
+          status: "AVAILABLE",
+          location: "Vaastu Enclave Site Office, Shela, Ahmedabad",
+        },
+      ]),
+      bookVisit: vi.fn(),
+    } as unknown as BookingService;
+
+    const mockGeminiClient: GeminiClientInterface = { generate: vi.fn() };
+
+    const aiService = new AIConciergeService(
+      mockDb as unknown as PrismaClient,
+      mockBookingService,
+      mockGeminiClient,
+      true
+    );
+
+    // 1. Choosing Option 1 ("1") -> Prakriti Heights slots
+    const result1 = await aiService.sendMessage({
+      conversationId: "conv-101",
+      message: "1",
+    });
+
+    expect(result1.handoffCreated).toBe(false);
+    expect(mockBookingService.bookVisit).not.toHaveBeenCalled();
+    expect(result1.aiMessage.content).toContain("Prakriti Heights");
+    expect(result1.aiMessage.content).toContain("slot-ph-1");
+    expect(result1.aiMessage.content).toContain("Please let me know which time works best for you so I can confirm it!");
+
+    // 2. Choosing Option 2 ("2") -> Vaastu Enclave slots (must NOT trigger sales handoff!)
+    const result2 = await aiService.sendMessage({
+      conversationId: "conv-101",
+      message: "2",
+    });
+
+    expect(result2.handoffCreated).toBe(false);
+    expect(mockBookingService.bookVisit).not.toHaveBeenCalled();
+    expect(result2.aiMessage.content).toContain("Vaastu Enclave");
+    expect(result2.aiMessage.content).toContain("slot-ve-1");
+    expect(result2.aiMessage.content).not.toContain("Vikram Mehta");
+  });
+
+  it("AD. Natural-language site-visit phrases without project ask which project to visit", async () => {
+    const testPhrases = [
+      "I want to book a site visit",
+      "I'd like to visit the property",
+      "Can I schedule a visit?",
+    ];
+
+    for (const phrase of testPhrases) {
+      const mockDb = createMockPrisma();
+      const mockBookingService = { getAvailableSlots: vi.fn(), bookVisit: vi.fn() } as unknown as BookingService;
+      const mockGeminiClient: GeminiClientInterface = { generate: vi.fn() };
+
+      const aiService = new AIConciergeService(
+        mockDb as unknown as PrismaClient,
+        mockBookingService,
+        mockGeminiClient,
+        true
+      );
+
+      const result = await aiService.sendMessage({
+        conversationId: "conv-101",
+        message: phrase,
+      });
+
+      expect(result.handoffCreated).toBe(false);
+      expect(result.handoff).toBeNull();
+      expect(mockBookingService.bookVisit).not.toHaveBeenCalled();
+      expect(result.aiMessage.content).toContain("Which project would you like to visit?");
+      expect(result.aiMessage.content).toContain("1. Prakriti Heights (SG Highway)");
+      expect(result.aiMessage.content).toContain("2. Vaastu Enclave (Shela)");
+    }
+  });
+
+  it("AE. Buyer says 'I want to see Prakriti Heights' -> directly retrieves and presents Prakriti Heights slots in IST", async () => {
+    const mockDb = createMockPrisma();
+    const mockBookingService = {
+      getAvailableSlots: vi.fn().mockResolvedValue([
+        {
+          id: "slot-ph-101",
+          startsAt: new Date("2026-11-16T05:30:00Z"),
+          endsAt: new Date("2026-11-16T06:30:00Z"),
+          status: "AVAILABLE",
+          location: "Prakriti Heights Experience Gallery, Ahmedabad",
+        },
+      ]),
+      bookVisit: vi.fn(),
+    } as unknown as BookingService;
+
+    const mockGeminiClient: GeminiClientInterface = { generate: vi.fn() };
+
+    const aiService = new AIConciergeService(
+      mockDb as unknown as PrismaClient,
+      mockBookingService,
+      mockGeminiClient,
+      true
+    );
+
+    const result = await aiService.sendMessage({
+      conversationId: "conv-101",
+      message: "I want to see Prakriti Heights",
+    });
+
+    expect(result.handoffCreated).toBe(false);
+    expect(result.handoff).toBeNull();
+    expect(mockBookingService.bookVisit).not.toHaveBeenCalled();
+    expect(result.aiMessage.content).toContain("upcoming available slots for your site visit to Prakriti Heights:");
+    expect(result.aiMessage.content).toContain("slot-ph-101");
+    expect(result.aiMessage.content).toContain("11:00 AM IST");
+  });
+
+  it("AF. Asking for sales produces handoff, while missing-pricing queries still produce missing-info handoffs", async () => {
+    const mockDb = createMockPrisma();
+    const mockBookingService = {} as unknown as BookingService;
+
+    // 1. Explicit sales request
+    const aiServiceSales = new AIConciergeService(
+      mockDb as unknown as PrismaClient,
+      mockBookingService,
+      { generate: vi.fn() },
+      true
+    );
+
+    const salesResult = await aiServiceSales.sendMessage({
+      conversationId: "conv-101",
+      message: "I want to speak with sales",
+    });
+
+    expect(salesResult.handoffCreated).toBe(true);
+    expect(salesResult.handoff?.escalationReason).toBe(EscalationReason.BUYER_REQUESTED);
+    expect(salesResult.aiMessage.content).toContain("Vikram Mehta");
+
+    // 2. Missing project pricing request
+    const mockGeminiClientMissingInfo: GeminiClientInterface = {
+      generate: vi.fn().mockResolvedValue({
+        text: undefined,
+        toolCalls: [
+          {
+            name: "handoffToExecutive",
+            args: {
+              escalationReason: "MISSING_PROJECT_INFO",
+              summary: "Buyer asked for exact 2 BHK pricing for Prakriti Heights",
+            },
+          },
+        ],
+      }),
+    };
+
+    const aiServiceMissing = new AIConciergeService(
+      mockDb as unknown as PrismaClient,
+      mockBookingService,
+      mockGeminiClientMissingInfo,
+      true
+    );
+
+    const missingResult = await aiServiceMissing.sendMessage({
+      conversationId: "conv-101",
+      message: "Tell me only about Prakriti Heights. What are its exact 2 BHK and 3 BHK prices?",
+    });
+
+    expect(missingResult.handoffCreated).toBe(true);
+    expect(missingResult.handoff?.escalationReason).toBe(EscalationReason.MISSING_PROJECT_INFO);
+    expect(missingResult.aiMessage.content).toContain("Exact 2 BHK and 3 BHK prices for Prakriti Heights are not available in our verified developer facts.");
+    expect(missingResult.aiMessage.content).toContain("Vikram Mehta");
   });
 });

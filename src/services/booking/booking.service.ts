@@ -94,11 +94,21 @@ export class BookingService {
       startsAtFilter.lte = validated.to;
     }
 
+    const where: Prisma.VisitSlotWhereInput = {
+      status: VisitSlotStatus.AVAILABLE,
+      startsAt: startsAtFilter,
+    };
+
+    const searchTarget = (validated.project || validated.location)?.trim();
+    if (searchTarget) {
+      where.location = {
+        contains: searchTarget,
+        mode: "insensitive",
+      };
+    }
+
     return this.db.visitSlot.findMany({
-      where: {
-        status: VisitSlotStatus.AVAILABLE,
-        startsAt: startsAtFilter,
-      },
+      where,
       orderBy: {
         startsAt: "asc",
       },

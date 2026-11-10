@@ -19,6 +19,7 @@ export interface SeedGuardParams {
   allowDestructiveSeed?: string;
   databaseUrl?: string;
   directUrl?: string;
+  isDestructive?: boolean;
 }
 
 export interface SeedGuardResult {
@@ -50,8 +51,9 @@ export function validateSeedTarget(params: SeedGuardParams): SeedGuardResult {
     };
   }
 
-  // 2. Explicit authorization flag check
-  if (params.allowDestructiveSeed !== "true") {
+  // 2. Explicit authorization flag check (required for destructive seed)
+  const isDestructive = params.isDestructive ?? true;
+  if (isDestructive && params.allowDestructiveSeed !== "true") {
     return {
       allowed: false,
       targetHost: null,
@@ -124,18 +126,26 @@ export function assertSeedSafety(
     allowDestructiveSeed: process.env.ALLOW_DESTRUCTIVE_SEED,
     databaseUrl: process.env.DATABASE_URL,
     directUrl: process.env.DIRECT_URL,
-  }
+  },
+  options: { isDestructive?: boolean } = {}
 ): string {
-  const result = validateSeedTarget(params);
+  const isDestructive = options.isDestructive ?? (params.isDestructive ?? true);
+  const result = validateSeedTarget({ ...params, isDestructive });
 
   if (!result.allowed) {
     console.error(`🛑 FATAL SEED SAFETY ERROR: ${result.reason}`);
     process.exit(1);
   }
 
-  console.log(
-    "🔒 Safety guards passed: Development environment and ALLOW_DESTRUCTIVE_SEED=true confirmed."
-  );
+  if (isDestructive) {
+    console.log(
+      "🔒 Safety guards passed: Development environment and ALLOW_DESTRUCTIVE_SEED=true confirmed."
+    );
+  } else {
+    console.log(
+      "🔒 Safety guards passed: Non-destructive seed mode on approved development endpoint."
+    );
+  }
   console.log(`🎯 Verified approved development endpoint: ${result.targetHost}`);
   return result.targetHost!;
 }

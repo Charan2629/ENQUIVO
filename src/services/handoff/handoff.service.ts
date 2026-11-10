@@ -493,6 +493,9 @@ export class HandoffService {
           createdAt: updated.conversation.lead.createdAt,
         },
       };
+    }, {
+      maxWait: 10000, // 10s wait for connection pool slot over cloud WAN
+      timeout: 20000, // 20s execution timeout for Neon WAN latency
     });
   }
 

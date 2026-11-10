@@ -1,7 +1,7 @@
 # ENQUIVO — AI Lead-Response & Site-Visit Assistant
 
-> 🚀 **Live Working Deployment**: [Open the Latest Working Deployment](https://your-deployment-url-here.vercel.app)
-> 📦 **GitHub Repository**: [https://github.com/your-username/enquivo](https://github.com/your-username/enquivo)
+> 🚀 **Live Working Deployment**: [Open the Latest Working Deployment](https://enquivo-pink.vercel.app/)
+> 📦 **GitHub Repository**: [https://github.com/your-username/enquivo](https://github.com/Charan2629/ENQUIVO)
 
 [![Next.js](https://img.shields.io/badge/Next.js-16.4.4-black?style=flat&logo=next.js)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?style=flat&logo=typescript)](https://www.typescriptlang.org/)

@@ -223,4 +223,26 @@ describe("Lead Ingestion Schema (ingestLeadSchema)", () => {
       })
     ).toThrow();
   });
+
+  it("strictly validates Indian mobile phone formats and rejects incomplete numbers", () => {
+    // 5-digit phone number is rejected
+    expect(() =>
+      ingestLeadSchema.parse({
+        name: "Test User",
+        phone: "12345",
+        source: LeadSource.WEBSITE,
+      })
+    ).toThrow();
+
+    // Valid 10-digit Indian numbers starting with 6, 7, 8, 9 succeed and normalize to +91
+    const validLeads = ["9876543210", "8765432109", "7654321098", "6543210987"];
+    for (const phone of validLeads) {
+      const parsed = ingestLeadSchema.parse({
+        name: "Test User",
+        phone,
+        source: LeadSource.WEBSITE,
+      });
+      expect(parsed.phone).toBe(`+91${phone}`);
+    }
+  });
 });

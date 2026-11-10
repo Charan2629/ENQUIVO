@@ -13,22 +13,46 @@ import {
 } from "@/services/session/buyer-session.service";
 import { LeadService } from "@/services/lead/lead.service";
 import { filterBuyerFacingMessages } from "@/lib/chat-message";
+import { normalizePhoneNumber } from "@/lib/validations/lead";
 
 const initSessionSchema = z.object({
   name: z
     .string()
     .trim()
-    .min(1, "Name is required")
+    .min(1, "Please enter your full name.")
     .max(100, "Name cannot exceed 100 characters"),
-  phone: z.string().trim().min(1, "Phone number is required"),
-  email: z.string().trim().email("Invalid email format").optional().nullable(),
+  phone: z
+    .string()
+    .trim()
+    .min(1, "Please enter your mobile phone number.")
+    .refine(
+      (val) => {
+        try {
+          normalizePhoneNumber(val);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      {
+        message:
+          "Please enter a valid 10-digit Indian mobile number starting with 6, 7, 8, or 9.",
+      }
+    ),
+  email: z
+    .string()
+    .trim()
+    .email("Please enter a valid email address (e.g. name@example.com).")
+    .optional()
+    .nullable()
+    .or(z.literal("")),
   language: z.nativeEnum(ConversationLanguage).default(ConversationLanguage.EN),
   projectId: z.string().trim().min(1).optional().nullable(),
   configuration: z.string().trim().max(50).optional().nullable(),
   consentText: z
     .string()
     .trim()
-    .min(10, "Explicit DPDP consent disclosure text is required"),
+    .min(10, "Please accept the privacy consent to continue."),
 });
 
 /**
@@ -236,8 +260,30 @@ export async function POST(req: Request) {
     return response;
   } catch (error) {
     if (error instanceof ZodError) {
+      const firstIssue = error.issues[0];
+      const field = firstIssue?.path[0]?.toString();
+      const message = firstIssue?.message || "Validation failed";
       return NextResponse.json(
-        { error: "Validation failed", details: error.issues },
+        {
+          error: message,
+          field,
+          details: error.issues,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (
+      error instanceof Error &&
+      (error.name === "InvalidPhoneNumberError" ||
+        error.message.toLowerCase().includes("phone number"))
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Please enter a valid 10-digit Indian mobile number starting with 6, 7, 8, or 9.",
+          field: "phone",
+        },
         { status: 400 }
       );
     }

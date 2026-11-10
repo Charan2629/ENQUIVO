@@ -20,9 +20,11 @@ export interface ConciergeDictionary {
   phoneLabel: string;
   phonePlaceholder: string;
   phoneRequiredError: string;
+  phoneInvalidError: string;
   emailLabel: string;
   emailOptional: string;
   emailPlaceholder: string;
+  emailInvalidError: string;
   projectInterestLabel: string;
   projectAllOption: string;
   projectPrakritiOption: string;
@@ -96,9 +98,12 @@ export const CONCIERGE_TRANSLATIONS: Record<Language, ConciergeDictionary> = {
     phoneLabel: "Mobile Phone Number (India)",
     phonePlaceholder: "e.g. +91 98765 43210",
     phoneRequiredError: "Please enter your mobile phone number.",
+    phoneInvalidError:
+      "Please enter a valid 10-digit Indian mobile number starting with 6, 7, 8, or 9.",
     emailLabel: "Email Address",
     emailOptional: "(Optional)",
     emailPlaceholder: "name@example.com",
+    emailInvalidError: "Please enter a valid email address (e.g. name@example.com).",
     projectInterestLabel: "Project Interest",
     projectAllOption: "All Projects (Ahmedabad Portfolio)",
     projectPrakritiOption: "Prakriti Heights (SG Highway Corridor)",
@@ -106,7 +111,7 @@ export const CONCIERGE_TRANSLATIONS: Record<Language, ConciergeDictionary> = {
     dpdpConsentLabel:
       "DPDP Act 2023 Digital Consent: I consent to ENQUIVO processing my name and contact number to provide verified residential property information and schedule site visits in Ahmedabad. I understand I can withdraw consent at any time.",
     dpdpConsentRequiredError:
-      "Digital consent under the DPDP Act 2023 is required to proceed.",
+      "Please accept the privacy consent to continue.",
     startSessionButton: "Start AI Concierge Consultation",
     startingSessionButton: "Establishing Secure Session...",
     privacySignedNotice:
@@ -180,9 +185,12 @@ export const CONCIERGE_TRANSLATIONS: Record<Language, ConciergeDictionary> = {
     phoneLabel: "मोबाइल नंबर (भारत)",
     phonePlaceholder: "उदा. +91 98765 43210",
     phoneRequiredError: "कृपया अपना मोबाइल फ़ोन नंबर दर्ज करें।",
+    phoneInvalidError:
+      "कृपया 6, 7, 8 या 9 से शुरू होने वाला मान्य 10-अंकीय भारतीय मोबाइल नंबर दर्ज करें।",
     emailLabel: "ईमेल पता",
     emailOptional: "(वैकल्पिक)",
     emailPlaceholder: "name@example.com",
+    emailInvalidError: "कृपया एक मान्य ईमेल पता दर्ज करें (उदा. name@example.com)।",
     projectInterestLabel: "परियोजना में रुचि",
     projectAllOption: "सभी प्रोजेक्ट्स (अहमदाबाद पोर्टफोलियो)",
     projectPrakritiOption: "प्रकृति हाइट्स (SG हाईवे कॉरिडोर)",
@@ -190,7 +198,7 @@ export const CONCIERGE_TRANSLATIONS: Record<Language, ConciergeDictionary> = {
     dpdpConsentLabel:
       "DPDP अधिनियम 2023 डिजिटल सहमति: मैं ENQUIVO को संपत्ति की सत्यापित जानकारी देने और अहमदाबाद में साइट विज़िट निर्धारित करने हेतु मेरा नाम और संपर्क नंबर प्रोसेस करने की सहमति देता हूँ। मैं किसी भी समय सहमति वापस ले सकता हूँ।",
     dpdpConsentRequiredError:
-      "आगे बढ़ने के लिए DPDP अधिनियम 2023 के तहत डिजिटल सहमति अनिवार्य है।",
+      "आगे बढ़ने के लिए कृपया गोपनीयता सहमति स्वीकार करें।",
     startSessionButton: "AI कंसीयर्ज परामर्श शुरू करें",
     startingSessionButton: "सुरक्षित सत्र प्रारंभ हो रहा है...",
     privacySignedNotice:
@@ -264,9 +272,12 @@ export const CONCIERGE_TRANSLATIONS: Record<Language, ConciergeDictionary> = {
     phoneLabel: "મોબાઈલ નંબર (ભારત)",
     phonePlaceholder: "દા.ત. +91 98765 43210",
     phoneRequiredError: "કૃપા કરીને તમારો મોબાઈલ નંબર દાખલ કરો.",
+    phoneInvalidError:
+      "કૃપા કરીને 6, 7, 8 અથવા 9 થી શરૂ થતો માન્ય 10-આંકડાનો ભારતીય મોબાઈલ નંબર દાખલ કરો.",
     emailLabel: "ઈમેલ એડ્રેસ",
     emailOptional: "(વૈકલ્પિક)",
     emailPlaceholder: "name@example.com",
+    emailInvalidError: "કૃપા કરીને માન્ય ઈમેલ સરનામું દાખલ કરો (દા.ત. name@example.com).",
     projectInterestLabel: "પ્રોજેક્ટ પસંદગી",
     projectAllOption: "બધા પ્રોજેક્ટ્સ (અમદાવાદ પોર્ટફોલિયો)",
     projectPrakritiOption: "પ્રકૃતિ હાઇટ્સ (SG હાઇવે કોરિડોર)",
@@ -274,7 +285,7 @@ export const CONCIERGE_TRANSLATIONS: Record<Language, ConciergeDictionary> = {
     dpdpConsentLabel:
       "DPDP એક્ટ 2023 ડિજિટલ સંમતિ: હું અમદાવાદમાં મિલકતની ચકાસાયેલ વિગતો આપવા અને સાઇટ મુલાકાત શેડ્યૂલ કરવા માટે ENQUIVO ને મારું નામ અને સંપર્ક નંબર પ્રોસેસ કરવાની સંમતિ આપું છું. હું કોઈપણ સમયે સંમતિ પાછી ખેંચી શકું છું.",
     dpdpConsentRequiredError:
-      "આગળ વધવા માટે DPDP એક્ટ 2023 હેઠળ ડિજિટલ સંમતિ ફરજિયાત છે.",
+      "આગળ વધવા માટે કૃપા કરીને ગોપનીયતા સંમતિ સ્વીકારો.",
     startSessionButton: "AI કોન્સિયર્જ પરામર્શ શરૂ કરો",
     startingSessionButton: "સુરક્ષિત સત્ર શરૂ થઈ રહ્યું છે...",
     privacySignedNotice:

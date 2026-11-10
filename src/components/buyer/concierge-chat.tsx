@@ -79,6 +79,12 @@ export function ConciergeChat({
   const [formProject, setFormProject] = useState(initialProjectId || "");
   const [formConsent, setFormConsent] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<{
+    name?: string;
+    phone?: string;
+    email?: string;
+    consent?: string;
+  }>({});
   const [isSubmittingForm, setIsSubmittingForm] = useState(false);
 
   // Chat State
@@ -158,17 +164,40 @@ export function ConciergeChat({
   async function handleStartSession(e: React.FormEvent) {
     e.preventDefault();
     setFormError(null);
+    setFieldErrors({});
+
+    const errors: { name?: string; phone?: string; email?: string; consent?: string } = {};
 
     if (!formName.trim()) {
-      setFormError(t.nameRequiredError);
-      return;
+      errors.name = t.nameRequiredError;
     }
-    if (!formPhone.trim()) {
-      setFormError(t.phoneRequiredError);
-      return;
+
+    const cleanPhone = formPhone.trim();
+    if (!cleanPhone) {
+      errors.phone = t.phoneRequiredError;
+    } else {
+      const digitsOnly = cleanPhone.replace(/\D/g, "");
+      const isLikelyIndian = digitsOnly.length === 10 || (digitsOnly.length === 12 && digitsOnly.startsWith("91"));
+      const last10 = digitsOnly.slice(-10);
+      if (digitsOnly.length < 10 || (isLikelyIndian && !/^[6-9]/.test(last10))) {
+        errors.phone = t.phoneInvalidError;
+      }
     }
+
+    if (formEmail.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(formEmail.trim())) {
+        errors.email = t.emailInvalidError;
+      }
+    }
+
     if (!formConsent) {
-      setFormError(t.dpdpConsentRequiredError);
+      errors.consent = t.dpdpConsentRequiredError;
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setFormError(errors.name || errors.phone || errors.email || errors.consent || null);
       return;
     }
 
@@ -190,6 +219,18 @@ export function ConciergeChat({
       const data = await res.json();
 
       if (!res.ok) {
+        if (data.field) {
+          const fieldMap: Record<string, "name" | "phone" | "email" | "consent"> = {
+            name: "name",
+            phone: "phone",
+            email: "email",
+            consentText: "consent",
+          };
+          const mappedKey = fieldMap[data.field];
+          if (mappedKey) {
+            setFieldErrors({ [mappedKey]: data.error });
+          }
+        }
         setFormError(data.error || "Failed to start concierge session.");
         return;
       }
@@ -481,19 +522,28 @@ export function ConciergeChat({
           </div>
         )}
 
-        <form onSubmit={handleStartSession} className="mt-5 space-y-4">
+        <form onSubmit={handleStartSession} noValidate className="mt-5 space-y-4">
           <div>
             <label className="block text-xs font-semibold text-[#102F43] mb-1.5">
               {t.nameLabel} <span className="text-[#13A99A]">*</span>
             </label>
             <input
               type="text"
-              required
               value={formName}
-              onChange={(e) => setFormName(e.target.value)}
+              onChange={(e) => {
+                setFormName(e.target.value);
+                if (fieldErrors.name) setFieldErrors((prev) => ({ ...prev, name: undefined }));
+              }}
               placeholder={t.namePlaceholder}
-              className="w-full rounded-xl bg-[#F7F8F4] px-3.5 py-2.5 text-xs sm:text-sm text-[#102F43] placeholder-[#102F43]/40 border border-[#102F43]/15 focus:border-[#13A99A] focus:outline-hidden focus:ring-1 focus:ring-[#13A99A] transition-colors"
+              className={`w-full rounded-xl bg-[#F7F8F4] px-3.5 py-2.5 text-xs sm:text-sm text-[#102F43] placeholder-[#102F43]/40 border ${
+                fieldErrors.name
+                  ? "border-rose-400 focus:border-rose-500 focus:ring-rose-500"
+                  : "border-[#102F43]/15 focus:border-[#13A99A] focus:ring-[#13A99A]"
+              } focus:outline-hidden focus:ring-1 transition-colors`}
             />
+            {fieldErrors.name && (
+              <p className="mt-1 text-[11px] text-rose-600 font-medium">{fieldErrors.name}</p>
+            )}
           </div>
 
           <div>
@@ -502,12 +552,21 @@ export function ConciergeChat({
             </label>
             <input
               type="tel"
-              required
               value={formPhone}
-              onChange={(e) => setFormPhone(e.target.value)}
+              onChange={(e) => {
+                setFormPhone(e.target.value);
+                if (fieldErrors.phone) setFieldErrors((prev) => ({ ...prev, phone: undefined }));
+              }}
               placeholder={t.phonePlaceholder}
-              className="w-full rounded-xl bg-[#F7F8F4] px-3.5 py-2.5 text-xs sm:text-sm text-[#102F43] placeholder-[#102F43]/40 border border-[#102F43]/15 focus:border-[#13A99A] focus:outline-hidden focus:ring-1 focus:ring-[#13A99A] transition-colors"
+              className={`w-full rounded-xl bg-[#F7F8F4] px-3.5 py-2.5 text-xs sm:text-sm text-[#102F43] placeholder-[#102F43]/40 border ${
+                fieldErrors.phone
+                  ? "border-rose-400 focus:border-rose-500 focus:ring-rose-500"
+                  : "border-[#102F43]/15 focus:border-[#13A99A] focus:ring-[#13A99A]"
+              } focus:outline-hidden focus:ring-1 transition-colors`}
             />
+            {fieldErrors.phone && (
+              <p className="mt-1 text-[11px] text-rose-600 font-medium">{fieldErrors.phone}</p>
+            )}
           </div>
 
           <div>
@@ -518,10 +577,20 @@ export function ConciergeChat({
             <input
               type="email"
               value={formEmail}
-              onChange={(e) => setFormEmail(e.target.value)}
+              onChange={(e) => {
+                setFormEmail(e.target.value);
+                if (fieldErrors.email) setFieldErrors((prev) => ({ ...prev, email: undefined }));
+              }}
               placeholder={t.emailPlaceholder}
-              className="w-full rounded-xl bg-[#F7F8F4] px-3.5 py-2.5 text-xs sm:text-sm text-[#102F43] placeholder-[#102F43]/40 border border-[#102F43]/15 focus:border-[#13A99A] focus:outline-hidden focus:ring-1 focus:ring-[#13A99A] transition-colors"
+              className={`w-full rounded-xl bg-[#F7F8F4] px-3.5 py-2.5 text-xs sm:text-sm text-[#102F43] placeholder-[#102F43]/40 border ${
+                fieldErrors.email
+                  ? "border-rose-400 focus:border-rose-500 focus:ring-rose-500"
+                  : "border-[#102F43]/15 focus:border-[#13A99A] focus:ring-[#13A99A]"
+              } focus:outline-hidden focus:ring-1 transition-colors`}
             />
+            {fieldErrors.email && (
+              <p className="mt-1 text-[11px] text-rose-600 font-medium">{fieldErrors.email}</p>
+            )}
           </div>
 
           <div>
@@ -540,19 +609,30 @@ export function ConciergeChat({
           </div>
 
           {/* DPDP Act 2023 Digital Consent Affirmation */}
-          <div className="rounded-xl bg-[#E7F4F4]/70 p-3.5 border border-[#13A99A]/30">
+          <div
+            className={`rounded-xl p-3.5 border transition-colors ${
+              fieldErrors.consent
+                ? "bg-rose-50/70 border-rose-300"
+                : "bg-[#E7F4F4]/70 border-[#13A99A]/30"
+            }`}
+          >
             <label className="flex items-start gap-2.5 cursor-pointer">
               <input
                 type="checkbox"
-                required
                 checked={formConsent}
-                onChange={(e) => setFormConsent(e.target.checked)}
+                onChange={(e) => {
+                  setFormConsent(e.target.checked);
+                  if (fieldErrors.consent) setFieldErrors((prev) => ({ ...prev, consent: undefined }));
+                }}
                 className="mt-0.5 h-4 w-4 rounded border-[#102F43]/30 bg-white text-[#13A99A] focus:ring-[#13A99A] cursor-pointer"
               />
               <span className="text-[11px] leading-relaxed text-[#102F43]/85">
                 {t.dpdpConsentLabel}
               </span>
             </label>
+            {fieldErrors.consent && (
+              <p className="mt-2 text-[11px] text-rose-600 font-medium">{fieldErrors.consent}</p>
+            )}
           </div>
 
           <button
